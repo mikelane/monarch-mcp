@@ -15,6 +15,7 @@ mod error;
 mod financial_overview;
 mod goals;
 mod spending_report;
+mod triage;
 mod tools;
 
 use anyhow::Result;

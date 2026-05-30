@@ -4,14 +4,25 @@ use crate::client::MonarchClient;
 use crate::error::MonarchError;
 use crate::financial_overview::compute_overview;
 use crate::spending_report::compute_spending_report;
+use crate::triage::{build_category_suggestion_map, partition_changeset, propose_changes, ChangeEntry};
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
-    handler::server::router::tool::ToolRouter,
+    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
     service::RequestContext,
     tool, tool_router,
 };
+use rmcp::schemars;
+use serde::Deserialize;
 use serde_json::json;
+
+/// Input parameters for the `apply_changeset` tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ApplyChangesetParams {
+    /// List of change entries to apply. Each entry may include id, category, tags, notes.
+    /// Entries containing forbidden fields (e.g. amount) are rejected and reported.
+    pub changes: Vec<serde_json::Value>,
+}
 
 #[derive(Clone)]
 pub struct MonarchTools {
@@ -89,10 +100,54 @@ impl MonarchTools {
         &self,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Err(McpError::internal_error(
-            "triage_uncategorized is not yet implemented (issue A6)",
-            None,
-        ))
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_triage(&client).await {
+            Ok(result) => serde_json::to_value(&result)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(description = "Apply an approved changeset, updating only category, tags, and notes. \
+        Amount, merchant, and date fields are forbidden — entries containing them are rejected \
+        and reported back. The set of transaction ids is never altered.")]
+    async fn apply_changeset(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+        Parameters(ApplyChangesetParams { changes }): Parameters<ApplyChangesetParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match apply_approved_changeset(&client, changes).await {
+            Ok(result) => serde_json::to_value(&result)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
     }
 
     #[tool(description = "Measure actual finances against the household's remembered goals \
@@ -129,6 +184,52 @@ async fn fetch_and_compute_spending(
     let budgets = client.get_budgets().await?;
     let cashflow = client.get_cashflow().await?;
     Ok(compute_spending_report(&transactions, &budgets, &cashflow))
+}
+
+async fn fetch_and_compute_triage(
+    client: &MonarchClient,
+) -> Result<crate::triage::TriageResult, MonarchError> {
+    let all_transactions = client.get_transactions().await?;
+    let uncategorized = client.get_transactions_needing_review().await?;
+    let suggestion_map = build_category_suggestion_map(&all_transactions);
+    Ok(propose_changes(&uncategorized, &suggestion_map))
+}
+
+async fn apply_approved_changeset(
+    client: &MonarchClient,
+    raw_changes: Vec<serde_json::Value>,
+) -> Result<crate::triage::ApplyResult, MonarchError> {
+    // Parse and validate entries before touching the API.
+    let entries: Vec<ChangeEntry> = raw_changes
+        .into_iter()
+        .map(|v| serde_json::from_value(v).unwrap_or(ChangeEntry {
+            id: None,
+            merchant: None,
+            category: None,
+            tags: None,
+            notes: None,
+            amount: None,
+        }))
+        .collect();
+
+    // Partition into allowed and forbidden entries — forbidden ones never reach the API.
+    let all_transactions = client.get_transactions().await?;
+    let total_count = all_transactions.len();
+    let result = partition_changeset(&entries, total_count);
+
+    // Send only the allowed changes to the Monarch API.
+    for change in &result.applied_changes {
+        client
+            .update_transaction(
+                &change.id,
+                change.category.as_deref(),
+                change.tags.clone(),
+                change.notes.as_deref(),
+            )
+            .await?;
+    }
+
+    Ok(result)
 }
 
 #[rmcp::tool_handler]
