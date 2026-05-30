@@ -51,8 +51,12 @@ into one decision-ready result (not 1:1 API wrappers you could replace with `cur
 ### 1. Install
 
 ```bash
-# Homebrew (macOS / Linux)
-brew install mikelane/tap/monarch-mcp
+# One-line shell installer (macOS / Linux)
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/mikelane/monarch-mcp/releases/latest/download/monarch-mcp-installer.sh | sh
+
+# PowerShell (Windows)
+irm https://github.com/mikelane/monarch-mcp/releases/latest/download/monarch-mcp-installer.ps1 | iex
 
 # Cargo (from crates.io)
 cargo install monarch-mcp
@@ -157,6 +161,8 @@ docs/specs/     Design spec
 Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup
 (`mise` / `lefthook` / `clippy` / `rustfmt`), the test-pyramid expectations, and the
 TDD/BDD workflow. Also read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
+For the release process (secrets, merge→publish flow), see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## License
 
