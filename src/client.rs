@@ -73,7 +73,10 @@ pub struct Account {
     /// Monarch sends `null` for unsynced or manually-tracked accounts.
     /// A null balance means "balance unknown" — we treat it as 0.0 so one
     /// unsynced account never fails the entire accounts parse.
-    #[serde(rename = "currentBalance", deserialize_with = "deserialize_null_f64_as_zero")]
+    #[serde(
+        rename = "currentBalance",
+        deserialize_with = "deserialize_null_f64_as_zero"
+    )]
     pub current_balance: f64,
     #[serde(rename = "type")]
     pub account_type: AccountType,
@@ -222,9 +225,15 @@ struct AggregateSnapshot {
 /// the null-to-zero deserializer so a missing cashflow period yields 0 not an error.
 #[derive(Debug, Deserialize)]
 struct CashflowSummaryRaw {
-    #[serde(rename = "sumIncome", deserialize_with = "deserialize_null_f64_as_zero")]
+    #[serde(
+        rename = "sumIncome",
+        deserialize_with = "deserialize_null_f64_as_zero"
+    )]
     pub sum_income: f64,
-    #[serde(rename = "sumExpense", deserialize_with = "deserialize_null_f64_as_zero")]
+    #[serde(
+        rename = "sumExpense",
+        deserialize_with = "deserialize_null_f64_as_zero"
+    )]
     pub sum_expense: f64,
 }
 
@@ -508,7 +517,12 @@ impl MonarchClient {
     // GraphQL transport
     // -----------------------------------------------------------------------
 
-    async fn graphql(&self, operation: &str, query: &str, variables: Value) -> Result<Value, MonarchError> {
+    async fn graphql(
+        &self,
+        operation: &str,
+        query: &str,
+        variables: Value,
+    ) -> Result<Value, MonarchError> {
         let token = self
             .token
             .as_deref()
@@ -686,7 +700,11 @@ impl MonarchClient {
     /// Returns budgets enriched with category names by joining against the
     /// categories list. Uses `GetJointPlanningData` (real operation) not the
     /// invented `GetBudgets { budgets { category { name } amount } }` (ADR 0002).
-    pub async fn get_budgets(&self, start_date: &str, end_date: &str) -> Result<Vec<Budget>, MonarchError> {
+    pub async fn get_budgets(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<Vec<Budget>, MonarchError> {
         // Fetch budgets (by category id) and categories (id→name) in parallel.
         let (budget_data, categories) = tokio::try_join!(
             self.graphql(
@@ -713,15 +731,12 @@ impl MonarchClient {
         )?;
 
         // Build id→name lookup.
-        let name_by_id: std::collections::HashMap<String, String> = categories
-            .into_iter()
-            .map(|c| (c.id, c.name))
-            .collect();
+        let name_by_id: std::collections::HashMap<String, String> =
+            categories.into_iter().map(|c| (c.id, c.name)).collect();
 
-        let monthly_by_cat: Vec<BudgetByCategoryRaw> = serde_json::from_value(
-            budget_data["budgetData"]["monthlyAmountsByCategory"].clone(),
-        )
-        .map_err(|e| MonarchError::Internal(format!("parse budgets: {e}")))?;
+        let monthly_by_cat: Vec<BudgetByCategoryRaw> =
+            serde_json::from_value(budget_data["budgetData"]["monthlyAmountsByCategory"].clone())
+                .map_err(|e| MonarchError::Internal(format!("parse budgets: {e}")))?;
 
         // Take the first month's plannedCashFlowAmount for each category.
         let budgets = monthly_by_cat
@@ -796,7 +811,11 @@ impl MonarchClient {
 
         let (current_data, prior_data) = tokio::try_join!(
             self.graphql("Web_GetCashFlowPage", query, json!({"filters": filters})),
-            self.graphql("Web_GetCashFlowPage", query, json!({"filters": prior_filters})),
+            self.graphql(
+                "Web_GetCashFlowPage",
+                query,
+                json!({"filters": prior_filters})
+            ),
         )?;
 
         let current_raw: CashflowSummaryRaw = extract_cashflow_summary(&current_data)?;
@@ -890,7 +909,9 @@ impl MonarchClient {
         // The prior-month net worth is the balance of the last snapshot in the window.
         let prior_month_net_worth = snapshots.last().map(|s| s.balance).unwrap_or(0.0);
 
-        Ok(NetWorthHistory { prior_month_net_worth })
+        Ok(NetWorthHistory {
+            prior_month_net_worth,
+        })
     }
 
     /// Fetch upcoming recurring transaction items for a date range (ADR 0003).
@@ -956,7 +977,11 @@ impl MonarchClient {
         Ok(raw
             .into_iter()
             .map(|r| crate::cashflow_forecast::RecurringItem {
-                merchant: r.stream.merchant.map(|m| m.name).unwrap_or_else(|| "Unknown".to_string()),
+                merchant: r
+                    .stream
+                    .merchant
+                    .map(|m| m.name)
+                    .unwrap_or_else(|| "Unknown".to_string()),
                 amount: r.amount,
                 is_past: r.is_past,
             })
@@ -1018,13 +1043,18 @@ impl MonarchClient {
             .await?;
 
         let raw: Vec<RecurringTransactionItemRaw> =
-            serde_json::from_value(data["recurringTransactionItems"].clone())
-                .map_err(|e| MonarchError::Internal(format!("parse recurring items for scan: {e}")))?;
+            serde_json::from_value(data["recurringTransactionItems"].clone()).map_err(|e| {
+                MonarchError::Internal(format!("parse recurring items for scan: {e}"))
+            })?;
 
         Ok(raw
             .into_iter()
             .map(|r| crate::recurring_scan::RecurringScanItem {
-                merchant: r.stream.merchant.map(|m| m.name).unwrap_or_else(|| "Unknown".to_string()),
+                merchant: r
+                    .stream
+                    .merchant
+                    .map(|m| m.name)
+                    .unwrap_or_else(|| "Unknown".to_string()),
                 stream_amount: r.stream.amount,
                 actual_amount: r.amount,
                 // Null diff means no prior occurrence to compare — treat as zero drift.
@@ -1168,9 +1198,9 @@ fn transaction_from_raw(raw: TransactionRaw) -> Transaction {
 fn extract_cashflow_summary(data: &Value) -> Result<CashflowSummaryRaw, MonarchError> {
     // `summary` is an alias for `aggregates(…, fillEmptyValues: true)` — it
     // returns an array; we want the first element's `.summary` sub-object.
-    let summaries = data["summary"]
-        .as_array()
-        .ok_or_else(|| MonarchError::Internal("cashflow summary missing 'summary' array".to_string()))?;
+    let summaries = data["summary"].as_array().ok_or_else(|| {
+        MonarchError::Internal("cashflow summary missing 'summary' array".to_string())
+    })?;
 
     let first = summaries
         .first()
@@ -1243,7 +1273,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let session_file = tmp.path().join("monarch-mcp").join("session.json");
         let mut client = MonarchClient::with_session_path(Some(server.uri()), session_file);
-        let token = client.login_password("user@example.com", "secret").await.unwrap();
+        let token = client
+            .login_password("user@example.com", "secret")
+            .await
+            .unwrap();
         assert_eq!(token, "tok-abc");
         assert_eq!(client.token(), Some("tok-abc"));
     }
@@ -1257,12 +1290,17 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/auth/login/"))
-            .respond_with(ResponseTemplate::new(403).set_body_json(json!({"detail": "MFA required"})))
+            .respond_with(
+                ResponseTemplate::new(403).set_body_json(json!({"detail": "MFA required"})),
+            )
             .mount(&server)
             .await;
 
         let mut client = MonarchClient::new(Some(server.uri()));
-        let err = client.login_password("user@example.com", "secret").await.unwrap_err();
+        let err = client
+            .login_password("user@example.com", "secret")
+            .await
+            .unwrap_err();
         assert!(matches!(err, LoginError::MfaRequired), "got: {err:?}");
     }
 
@@ -1307,11 +1345,11 @@ mod tests {
 
     #[test]
     fn resolve_token_prefers_env_var() {
-        unsafe { std::env::set_var("MONARCH_TOKEN", "env-token-xyz") };
-        let mut client = MonarchClient::new(None);
-        client.resolve_token_from_env_or_disk();
-        assert_eq!(client.token(), Some("env-token-xyz"));
-        unsafe { std::env::remove_var("MONARCH_TOKEN") };
+        temp_env::with_var("MONARCH_TOKEN", Some("env-token-xyz"), || {
+            let mut client = MonarchClient::new(None);
+            client.resolve_token_from_env_or_disk();
+            assert_eq!(client.token(), Some("env-token-xyz"));
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -1324,8 +1362,9 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .respond_with(
-                ResponseTemplate::new(401)
-                    .set_body_json(json!({"detail": "Authentication credentials were not provided."})),
+                ResponseTemplate::new(401).set_body_json(
+                    json!({"detail": "Authentication credentials were not provided."}),
+                ),
             )
             .mount(&server)
             .await;
@@ -1497,7 +1536,10 @@ mod tests {
             .await;
 
         let client = client_for(&server.uri());
-        let txns = client.get_transactions("2026-05-01", "2026-05-31", 100).await.unwrap();
+        let txns = client
+            .get_transactions("2026-05-01", "2026-05-31", 100)
+            .await
+            .unwrap();
         assert_eq!(txns.len(), 1);
         assert_eq!(txns[0].merchant_name, "ACME Cafe");
         assert_eq!(txns[0].amount, -45.50);
@@ -1611,7 +1653,10 @@ mod tests {
             .await;
 
         let client = client_for(&server.uri());
-        let h = client.get_net_worth_history("2026-04-01", "2026-04-30").await.unwrap();
+        let h = client
+            .get_net_worth_history("2026-04-01", "2026-04-30")
+            .await
+            .unwrap();
         assert_eq!(h.prior_month_net_worth, 68500.00);
     }
 
@@ -1646,15 +1691,23 @@ mod tests {
             .await;
 
         let client = client_for(&server.uri());
-        let result = client.get_cashflow("2026-05-01", "2026-05-31", "2026-04-01", "2026-04-30").await;
+        let result = client
+            .get_cashflow("2026-05-01", "2026-05-31", "2026-04-01", "2026-04-30")
+            .await;
         assert!(
             result.is_ok(),
             "null cashflow sums must not fail the parse; got: {:?}",
             result.err()
         );
         let cf = result.unwrap();
-        assert!((cf.income - 0.0).abs() < f64::EPSILON, "null sumIncome should be 0.0");
-        assert!((cf.spending - 0.0).abs() < f64::EPSILON, "null sumExpense should be 0.0");
+        assert!(
+            (cf.income - 0.0).abs() < f64::EPSILON,
+            "null sumIncome should be 0.0"
+        );
+        assert!(
+            (cf.spending - 0.0).abs() < f64::EPSILON,
+            "null sumExpense should be 0.0"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1726,7 +1779,10 @@ mod tests {
             .await;
 
         let client = client_for(&server.uri());
-        let items = client.get_recurring("2026-05-01", "2026-05-31").await.unwrap();
+        let items = client
+            .get_recurring("2026-05-01", "2026-05-31")
+            .await
+            .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].merchant, "Landlord");
         assert!((items[0].amount - (-1500.0)).abs() < 0.01);
@@ -1745,7 +1801,10 @@ mod tests {
             .await;
 
         let client = client_for(&server.uri());
-        let items = client.get_recurring("2026-05-01", "2026-05-31").await.unwrap();
+        let items = client
+            .get_recurring("2026-05-01", "2026-05-31")
+            .await
+            .unwrap();
         assert!(items.is_empty());
     }
 
@@ -1791,7 +1850,10 @@ mod tests {
             .await;
 
         let client = client_for(&server.uri());
-        let items = client.get_recurring_for_scan("2026-05-01", "2026-05-31").await.unwrap();
+        let items = client
+            .get_recurring_for_scan("2026-05-01", "2026-05-31")
+            .await
+            .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].merchant, "StreamingCo");
         assert!((items[0].stream_amount - (-9.99)).abs() < 0.01);
@@ -1839,9 +1901,15 @@ mod tests {
             .await;
 
         let client = client_for(&server.uri());
-        let items = client.get_recurring_for_scan("2026-05-01", "2026-05-31").await.unwrap();
+        let items = client
+            .get_recurring_for_scan("2026-05-01", "2026-05-31")
+            .await
+            .unwrap();
         assert_eq!(items.len(), 1);
-        assert!(items[0].is_approximate, "utility stream must be marked approximate");
+        assert!(
+            items[0].is_approximate,
+            "utility stream must be marked approximate"
+        );
         assert!(items[0].is_past, "past item must be marked is_past");
         assert!((items[0].stream_amount - (-120.0)).abs() < 0.01);
         assert!((items[0].actual_amount - (-134.50)).abs() < 0.01);
@@ -1874,7 +1942,10 @@ mod tests {
             .await;
 
         let client = client_for(&server.uri());
-        let snaps = client.get_snapshots_by_account_type("2026-04-01").await.unwrap();
+        let snaps = client
+            .get_snapshots_by_account_type("2026-04-01")
+            .await
+            .unwrap();
         assert_eq!(snaps.len(), 3);
         assert_eq!(snaps[0].account_type, "depository");
         assert_eq!(snaps[0].month, "2026-04");
@@ -1897,7 +1968,10 @@ mod tests {
             .await;
 
         let client = client_for(&server.uri());
-        let snaps = client.get_snapshots_by_account_type("2026-04-01").await.unwrap();
+        let snaps = client
+            .get_snapshots_by_account_type("2026-04-01")
+            .await
+            .unwrap();
         assert!(snaps.is_empty());
     }
 
@@ -1906,12 +1980,17 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token."})))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token."})),
+            )
             .mount(&server)
             .await;
 
         let client = client_for(&server.uri());
-        let err = client.get_snapshots_by_account_type("2026-04-01").await.unwrap_err();
+        let err = client
+            .get_snapshots_by_account_type("2026-04-01")
+            .await
+            .unwrap_err();
         assert!(matches!(err, MonarchError::SessionExpired));
     }
 
@@ -1920,12 +1999,17 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token."})))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token."})),
+            )
             .mount(&server)
             .await;
 
         let client = client_for(&server.uri());
-        let err = client.get_recurring("2026-05-01", "2026-05-31").await.unwrap_err();
+        let err = client
+            .get_recurring("2026-05-01", "2026-05-31")
+            .await
+            .unwrap_err();
         assert!(matches!(err, MonarchError::SessionExpired));
     }
 
@@ -1962,13 +2046,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let session_file = tmp.path().join("monarch-mcp").join("session.json");
 
-        persist_token_to(&session_file, "isolated-tok-roundtrip")
-            .expect("persist should succeed");
+        persist_token_to(&session_file, "isolated-tok-roundtrip").expect("persist should succeed");
 
-        assert!(session_file.exists(), "session.json must exist after persist");
+        assert!(
+            session_file.exists(),
+            "session.json must exist after persist"
+        );
 
-        let loaded = load_token_from(&session_file)
-            .expect("should load the token we just wrote");
+        let loaded = load_token_from(&session_file).expect("should load the token we just wrote");
 
         assert_eq!(loaded, "isolated-tok-roundtrip");
     }

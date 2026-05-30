@@ -67,9 +67,8 @@ impl Goals {
     /// the file is empty. Returns `Err(MonarchError::GoalsFile)` on I/O or
     /// parse failures.
     pub fn load_from_path(path: &Path) -> Result<Self, MonarchError> {
-        let contents = std::fs::read_to_string(path).map_err(|e| {
-            MonarchError::GoalsFile(format!("cannot read {}: {e}", path.display()))
-        })?;
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| MonarchError::GoalsFile(format!("cannot read {}: {e}", path.display())))?;
 
         if contents.trim().is_empty() {
             return Ok(Goals::default());
@@ -146,7 +145,8 @@ mod tests {
 
     #[test]
     fn both_numeric_goals_are_parsed_together() {
-        let toml = "[savings_rate]\ntarget_percent = 15.0\n\n[emergency_fund]\ntarget_months = 3.0\n";
+        let toml =
+            "[savings_rate]\ntarget_percent = 15.0\n\n[emergency_fund]\ntarget_months = 3.0\n";
         let f = write_goals_file(toml);
         let goals = Goals::load_from_path(f.path()).unwrap();
         assert_eq!(goals.savings_rate.unwrap().target_percent, 15.0);
@@ -211,13 +211,9 @@ mod tests {
 
     #[test]
     fn unset_env_var_yields_default_goals() {
-        // Temporarily remove the env var (if set by the test harness)
-        let old = std::env::var("MONARCH_GOALS_FILE").ok();
-        unsafe { std::env::remove_var("MONARCH_GOALS_FILE") };
-        let goals = Goals::load_from_env().unwrap();
-        assert_eq!(goals, Goals::default());
-        if let Some(v) = old {
-            unsafe { std::env::set_var("MONARCH_GOALS_FILE", v) };
-        }
+        temp_env::with_var_unset("MONARCH_GOALS_FILE", || {
+            let goals = Goals::load_from_env().unwrap();
+            assert_eq!(goals, Goals::default());
+        });
     }
 }

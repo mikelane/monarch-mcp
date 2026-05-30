@@ -2,8 +2,14 @@
 name = "monarch-mcp"
 version = "0.1.0"
 edition = "2021"
-description = "Monarch Money MCP server — agentic budgeting companion"
-publish = false
+description = "Monarch Money MCP server — an agentic budgeting companion (read + categorize only)"
+authors = ["Mike Lane <mikelane@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mikelane/monarch-mcp"
+homepage = "https://github.com/mikelane/monarch-mcp"
+readme = "README.md"
+keywords = ["mcp", "monarch", "finance", "budgeting"]
+categories = ["command-line-utilities", "api-bindings"]
 
 [[bin]]
 name = "monarch-mcp"
@@ -32,3 +38,10 @@ rpassword = "7"
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = "3"
+temp-env = "0.3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
