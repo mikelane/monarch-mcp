@@ -29,17 +29,17 @@ pub struct TriageResult {
 }
 
 /// A single change entry supplied by the caller in an `apply_changeset` request.
+///
+/// Only `category`, `tags`, and `notes` are mutable. Any other field (amount,
+/// account, merchant, date, …) is unknown and rejected by `deny_unknown_fields`.
+/// `id` identifies the transaction to update.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ChangeEntry {
     pub id: Option<String>,
-    /// Merchant name used for lookup when `id` is absent.
-    #[allow(dead_code)]
-    pub merchant: Option<String>,
     pub category: Option<String>,
     pub tags: Option<Vec<String>>,
     pub notes: Option<String>,
-    // Any other fields — we check for forbidden ones below
-    pub amount: Option<f64>,
 }
 
 /// One applied or rejected change in the result.
@@ -115,41 +115,80 @@ pub fn propose_changes(
 
 /// Validate a change entry.
 ///
-/// Returns `Err(reason)` when the entry contains a forbidden field (e.g. `amount`).
-pub fn validate_change_entry(entry: &ChangeEntry) -> Result<(), String> {
-    if entry.amount.is_some() {
-        return Err("amount_change_forbidden".to_string());
-    }
+/// With `deny_unknown_fields` on `ChangeEntry`, serde already rejects any field
+/// outside `{id, category, tags, notes}` at parse time. This function is the
+/// post-parse gate for any remaining business-rule violations.
+pub fn validate_change_entry(_entry: &ChangeEntry) -> Result<(), String> {
     Ok(())
+}
+
+/// Parse a list of raw JSON change entries, preserving the real transaction id
+/// in a `RejectedChange` when serde fails (e.g. unknown fields, wrong types).
+///
+/// This replaces the previous `unwrap_or(ChangeEntry { all None })` pattern in
+/// `tools.rs` that silently swallowed malformed or forbidden entries.
+pub fn parse_raw_changes(raw: Vec<serde_json::Value>) -> Vec<ParsedEntry> {
+    raw.into_iter()
+        .map(|v| {
+            // Extract the id independently so we can name the entry in rejections
+            // even when the full parse fails.
+            let id = v.get("id")
+                .and_then(|id| id.as_str())
+                .map(str::to_string);
+
+            match serde_json::from_value::<ChangeEntry>(v) {
+                Ok(entry) => ParsedEntry::Ok(entry),
+                Err(reason) => ParsedEntry::Rejected(RejectedChange {
+                    id: id.unwrap_or_else(|| "unknown".to_string()),
+                    reason: reason.to_string(),
+                }),
+            }
+        })
+        .collect()
+}
+
+/// Outcome of parsing one raw change entry.
+pub enum ParsedEntry {
+    Ok(ChangeEntry),
+    Rejected(RejectedChange),
 }
 
 /// Apply an approved changeset, filtering out forbidden mutations.
 ///
-/// Each entry is validated before being passed to the caller's apply function.
-/// Entries with forbidden fields are collected in `rejected_changes`; allowed
-/// entries are collected in `applied_changes`. The `total_transaction_count`
-/// is threaded through to the result so callers can assert the id-set is
-/// unchanged.
+/// Each `ParsedEntry` is either already-rejected (parse failed) or valid.
+/// Valid entries pass through `validate_change_entry` for any remaining
+/// business-rule checks. The `total_transaction_count` is threaded through
+/// so callers can assert the id-set is unchanged.
 pub fn partition_changeset(
-    entries: &[ChangeEntry],
+    entries: &[ParsedEntry],
     total_transaction_count: usize,
 ) -> ApplyResult {
     let mut applied_changes = Vec::new();
     let mut rejected_changes = Vec::new();
 
     for entry in entries {
-        let id = entry.id.clone().unwrap_or_else(|| "unknown".to_string());
-        match validate_change_entry(entry) {
-            Ok(()) => {
-                applied_changes.push(AppliedChange {
-                    id,
-                    category: entry.category.clone(),
-                    tags: entry.tags.clone(),
-                    notes: entry.notes.clone(),
+        match entry {
+            ParsedEntry::Rejected(r) => {
+                rejected_changes.push(RejectedChange {
+                    id: r.id.clone(),
+                    reason: r.reason.clone(),
                 });
             }
-            Err(reason) => {
-                rejected_changes.push(RejectedChange { id, reason });
+            ParsedEntry::Ok(entry) => {
+                let id = entry.id.clone().unwrap_or_else(|| "unknown".to_string());
+                match validate_change_entry(entry) {
+                    Ok(()) => {
+                        applied_changes.push(AppliedChange {
+                            id,
+                            category: entry.category.clone(),
+                            tags: entry.tags.clone(),
+                            notes: entry.notes.clone(),
+                        });
+                    }
+                    Err(reason) => {
+                        rejected_changes.push(RejectedChange { id, reason });
+                    }
+                }
             }
         }
     }
@@ -184,15 +223,17 @@ mod tests {
         }
     }
 
-    fn make_change(id: Option<&str>, category: Option<&str>, amount: Option<f64>) -> ChangeEntry {
+    fn make_change(id: Option<&str>, category: Option<&str>) -> ChangeEntry {
         ChangeEntry {
             id: id.map(str::to_string),
-            merchant: None,
             category: category.map(str::to_string),
             tags: None,
             notes: None,
-            amount,
         }
+    }
+
+    fn wrap_ok(entries: Vec<ChangeEntry>) -> Vec<ParsedEntry> {
+        entries.into_iter().map(ParsedEntry::Ok).collect()
     }
 
     // -----------------------------------------------------------------------
@@ -266,19 +307,21 @@ mod tests {
 
     #[test]
     fn change_entry_with_only_category_is_valid() {
-        let entry = make_change(Some("t1"), Some("Coffee"), None);
+        let entry = make_change(Some("t1"), Some("Coffee"));
         assert!(validate_change_entry(&entry).is_ok());
     }
 
     // -----------------------------------------------------------------------
-    // 9b GREEN → 9c TRIANGULATE: amount field is forbidden
+    // 9b GREEN → 9c TRIANGULATE: amount field is forbidden (via serde rejection)
     // -----------------------------------------------------------------------
 
     #[test]
     fn change_entry_with_amount_is_rejected() {
-        let entry = make_change(Some("t1"), None, Some(0.0));
-        let err = validate_change_entry(&entry).unwrap_err();
-        assert_eq!(err, "amount_change_forbidden");
+        let raw = serde_json::json!({"id": "t1", "amount": 0.0});
+        let entries = parse_raw_changes(vec![raw]);
+        let result = partition_changeset(&entries, 1);
+        assert_eq!(result.rejected_changes.len(), 1, "amount must be rejected");
+        assert_eq!(result.rejected_changes[0].id, "t1");
     }
 
     // -----------------------------------------------------------------------
@@ -287,8 +330,10 @@ mod tests {
 
     #[test]
     fn change_entry_amount_zero_is_also_rejected() {
-        let entry = make_change(Some("t1"), None, Some(0.0));
-        assert!(validate_change_entry(&entry).is_err());
+        let raw = serde_json::json!({"id": "t1", "amount": 0.0});
+        let entries = parse_raw_changes(vec![raw]);
+        let result = partition_changeset(&entries, 1);
+        assert!(!result.rejected_changes.is_empty(), "amount=0 must still be rejected");
     }
 
     // -----------------------------------------------------------------------
@@ -297,11 +342,13 @@ mod tests {
 
     #[test]
     fn partition_changeset_separates_valid_and_rejected_entries() {
-        let entries = vec![
-            make_change(Some("t1"), Some("Coffee"), None),
-            make_change(Some("t2"), None, Some(0.0)),
-        ];
-        let result = partition_changeset(&entries, 10);
+        // t1: valid (category only); t2: forbidden (amount via parse rejection)
+        let valid = ParsedEntry::Ok(make_change(Some("t1"), Some("Coffee")));
+        let rejected = ParsedEntry::Rejected(RejectedChange {
+            id: "t2".to_string(),
+            reason: "amount_change_forbidden".to_string(),
+        });
+        let result = partition_changeset(&[valid, rejected], 10);
         assert_eq!(result.applied_changes.len(), 1);
         assert_eq!(result.applied_changes[0].id, "t1");
         assert_eq!(result.rejected_changes.len(), 1);
@@ -314,7 +361,7 @@ mod tests {
 
     #[test]
     fn partition_changeset_preserves_transaction_count() {
-        let entries = vec![make_change(Some("t1"), Some("Coffee"), None)];
+        let entries = wrap_ok(vec![make_change(Some("t1"), Some("Coffee"))]);
         let result = partition_changeset(&entries, 40);
         assert_eq!(result.transaction_count, 40);
     }
@@ -329,5 +376,91 @@ mod tests {
         assert!(result.applied_changes.is_empty());
         assert!(result.rejected_changes.is_empty());
         assert_eq!(result.transaction_count, 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG 2 RED: forbidden fields account/merchant/date must be rejected
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn change_entry_with_account_field_is_rejected() {
+        // account reassignment is forbidden — only category/tags/notes are allowed
+        let raw = serde_json::json!({
+            "id": "t-acct", "category": "Coffee", "account": "other-account-id"
+        });
+        let result = parse_and_partition_single(raw, 1);
+        assert_eq!(result.applied_changes.len(), 0, "account field must be rejected, not applied");
+        assert_eq!(result.rejected_changes.len(), 1, "must have one rejected entry");
+        assert_eq!(result.rejected_changes[0].id, "t-acct", "real id must be preserved in rejection");
+    }
+
+    #[test]
+    fn change_entry_with_date_field_is_rejected() {
+        let raw = serde_json::json!({
+            "id": "t-date", "category": "Dining", "date": "2099-01-01"
+        });
+        let result = parse_and_partition_single(raw, 1);
+        assert_eq!(result.applied_changes.len(), 0, "date field must be rejected");
+        assert_eq!(result.rejected_changes[0].id, "t-date", "real id must be preserved");
+    }
+
+    // BUG 2b RED: amount as string must be rejected with real id, not swallowed
+    #[test]
+    fn amount_as_string_is_rejected_not_silently_swallowed() {
+        // serde would fail to parse "100.00" as f64, unwrap_or used to drop to all-None
+        // entry with id "unknown" and push it to applied — this must instead be a rejection
+        let raw = serde_json::json!({
+            "id": "t-stramt", "amount": "100.00"
+        });
+        let result = parse_and_partition_single(raw, 1);
+        assert_eq!(result.applied_changes.len(), 0,
+            "amount-as-string must not appear in applied_changes");
+        assert!(!result.rejected_changes.is_empty(),
+            "amount-as-string entry must appear in rejected_changes");
+        assert_eq!(result.rejected_changes[0].id, "t-stramt",
+            "real transaction id must be preserved, not 'unknown'");
+    }
+
+    #[test]
+    fn unknown_id_sentinel_never_appears_in_applied_changes() {
+        // "unknown" as an id signals that parse_entries lost the real id — it must never
+        // appear in applied_changes since that would trigger update_transaction("unknown", …)
+        let raw = serde_json::json!({
+            "id": "t-real", "amount": "bad-value"
+        });
+        let result = parse_and_partition_single(raw, 1);
+        let has_unknown_applied = result.applied_changes.iter().any(|a| a.id == "unknown");
+        assert!(!has_unknown_applied,
+            "id 'unknown' must never appear in applied_changes; got: {:?}", result.applied_changes);
+    }
+
+    // BUG 2c RED: malformed-but-legitimate entry must NOT be silently dropped
+    #[test]
+    fn legitimate_entry_with_malformed_tags_preserves_id_in_rejection() {
+        // tags must be an array; a string value fails serde. The entry must be
+        // rejected with the real id, not silently become a no-op with id "unknown".
+        let raw = serde_json::json!({
+            "id": "t-tags", "category": "Dining", "tags": "not-an-array"
+        });
+        let result = parse_and_partition_single(raw, 1);
+        // Either: parsed OK (tags ignored/coerced) with real id applied, OR
+        // rejected with real id. What must NOT happen: id "unknown" in applied.
+        let unknown_applied = result.applied_changes.iter().any(|a| a.id == "unknown");
+        assert!(!unknown_applied,
+            "malformed entry must not produce id 'unknown' in applied_changes; got: {:?}",
+            result.applied_changes);
+        // The real id must be traceable (either applied with correct id or rejected with real id)
+        let real_id_present = result.applied_changes.iter().any(|a| a.id == "t-tags")
+            || result.rejected_changes.iter().any(|r| r.id == "t-tags");
+        assert!(real_id_present,
+            "real id 't-tags' must appear somewhere in result; applied={:?} rejected={:?}",
+            result.applied_changes, result.rejected_changes);
+    }
+
+    /// Helper: parse a single raw JSON value through the full parse+partition path
+    /// (mirrors the tools.rs apply_approved_changeset logic).
+    fn parse_and_partition_single(raw: serde_json::Value, txn_count: usize) -> ApplyResult {
+        let entries = parse_raw_changes(vec![raw]);
+        partition_changeset(&entries, txn_count)
     }
 }

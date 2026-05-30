@@ -6,7 +6,7 @@ use crate::financial_overview::compute_overview;
 use crate::goals::Goals;
 use crate::progress_vs_goals::compute_progress;
 use crate::spending_report::compute_spending_report;
-use crate::triage::{build_category_suggestion_map, partition_changeset, propose_changes, ChangeEntry};
+use crate::triage::{build_category_suggestion_map, parse_raw_changes, partition_changeset, propose_changes};
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -124,8 +124,9 @@ impl MonarchTools {
     }
 
     #[tool(description = "Apply an approved changeset, updating only category, tags, and notes. \
-        Amount, merchant, and date fields are forbidden — entries containing them are rejected \
-        and reported back. The set of transaction ids is never altered.")]
+        Any other field (amount, account, merchant, date, or unknown fields) is forbidden — \
+        entries containing them are rejected and reported back with the original transaction id. \
+        The set of transaction ids is never altered.")]
     async fn apply_changeset(
         &self,
         _ctx: RequestContext<RoleServer>,
@@ -226,18 +227,9 @@ async fn apply_approved_changeset(
     client: &MonarchClient,
     raw_changes: Vec<serde_json::Value>,
 ) -> Result<crate::triage::ApplyResult, MonarchError> {
-    // Parse and validate entries before touching the API.
-    let entries: Vec<ChangeEntry> = raw_changes
-        .into_iter()
-        .map(|v| serde_json::from_value(v).unwrap_or(ChangeEntry {
-            id: None,
-            merchant: None,
-            category: None,
-            tags: None,
-            notes: None,
-            amount: None,
-        }))
-        .collect();
+    // Parse entries strictly: unknown fields and wrong types become RejectedChange
+    // entries with the real transaction id preserved, never silent no-ops.
+    let entries = parse_raw_changes(raw_changes);
 
     // Partition into allowed and forbidden entries — forbidden ones never reach the API.
     let all_transactions = client.get_transactions().await?;
