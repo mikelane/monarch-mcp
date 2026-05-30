@@ -1,4 +1,4 @@
-@ISSUE-A6 @not_implemented
+@ISSUE-A6
 Feature: Triage and tidy uncategorized transactions
   Trustworthy data is the foundation of every other tool, so the advisor
   keeps the books honest. Triage finds transactions needing review and

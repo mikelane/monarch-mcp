@@ -1,4 +1,4 @@
-@ISSUE-A4 @not_implemented
+@ISSUE-A4
 Feature: Financial overview snapshot
   The advisor's situational-awareness tool. In one call it answers
   "where does the household stand right now?" — combining every account's
