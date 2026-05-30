@@ -153,6 +153,45 @@ impl MonarchTools {
         )]))
     }
 
+    #[tool(description = "Project the household's month-end cash position from current account \
+        balances, income and spending so far this period, and scheduled recurring charges. \
+        Flags a shortfall when upcoming bills are on track to exceed available funds.")]
+    async fn cashflow_forecast(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        Err(McpError::invalid_request(
+            "cashflow_forecast is not yet implemented (Epic B — ISSUE-B1)",
+            None,
+        ))
+    }
+
+    #[tool(description = "Show net worth month-by-month over a requested period, broken down \
+        by account type (depository, brokerage, credit, loan, etc.), with the biggest \
+        single mover and a total assets-versus-liabilities split.")]
+    async fn net_worth_trend(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        Err(McpError::invalid_request(
+            "net_worth_trend is not yet implemented (Epic B — ISSUE-B2)",
+            None,
+        ))
+    }
+
+    #[tool(description = "Scan recurring charges for amount drift ('creeping' subscriptions \
+        whose price has quietly changed) and list upcoming renewals due this period. \
+        Stable subscriptions are reported but not flagged.")]
+    async fn recurring_scan(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        Err(McpError::invalid_request(
+            "recurring_scan is not yet implemented (Epic B — ISSUE-B3)",
+            None,
+        ))
+    }
+
     #[tool(description = "Measure actual finances against the household's remembered goals \
         (savings rate, emergency-fund runway, debt payoff). Reports each goal as \
         on-track, drifting, or off, with the lever to pull.")]
@@ -368,7 +407,8 @@ impl ServerHandler for MonarchTools {
         .with_protocol_version(ProtocolVersion::V_2024_11_05)
         .with_instructions(
             "Monarch Money budgeting advisor. Tools: financial_overview, \
-             spending_report, triage_uncategorized, progress_vs_goals."
+             spending_report, triage_uncategorized, progress_vs_goals, \
+             cashflow_forecast, net_worth_trend, recurring_scan."
                 .to_string(),
         )
     }

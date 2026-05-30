@@ -43,6 +43,13 @@ _DEFAULT_FIXTURES: dict[str, Any] = {
     "applied_changes": [],
     # When True every authenticated endpoint returns 401
     "session_expired": False,
+    # --- Epic B fixtures ---
+    # List of recurring charge dicts for Web_GetUpcomingRecurringTransactionItems:
+    #   {merchant, stream_amount, actual_amount?, frequency, is_approximate, is_past}
+    "recurring_items": [],
+    # List of net-worth-by-type snapshot dicts for GetSnapshotsByAccountType:
+    #   {month (YYYY-MM), account_type, balance}
+    "snapshots_by_type": [],
 }
 
 
@@ -611,6 +618,104 @@ def _handle_common_update_transaction(body: dict) -> dict:
     }
 
 
+def _handle_web_get_upcoming_recurring(body: dict) -> dict:
+    """Web_GetUpcomingRecurringTransactionItems → recurringTransactionItems[]
+
+    Returns recurring items in real Monarch response shape (ADR 0003).
+    Each fixture item drives one RecurringTransactionItem with a nested stream.
+    `is_past` controls whether the item has already occurred this period.
+    `is_approximate` on the stream marks utility-style charges whose amount
+    varies — the recurring_scan tool must not flag these as creeping.
+    `actual_amount` defaults to `stream_amount` when omitted (stable charge).
+    """
+    fixtures = get_fixtures()
+    items = []
+    for i, r in enumerate(fixtures.get("recurring_items", [])):
+        merchant_name = r.get("merchant", f"Merchant {i}")
+        stream_amount = float(r.get("stream_amount", 0.0))
+        actual_amount = float(r.get("actual_amount", stream_amount))
+        frequency = r.get("frequency", "monthly")
+        is_approximate = bool(r.get("is_approximate", False))
+        is_past = bool(r.get("is_past", False))
+        # amountDiff: difference between actual and stream amount.
+        # Positive when actual > stream (price increase), negative when less.
+        amount_diff = round(actual_amount - abs(stream_amount), 2)
+        # transactionId present only for past items
+        transaction_id = f"txn-recur-{i}" if is_past else None
+        items.append({
+            "stream": {
+                "id": f"stream-{i}",
+                "frequency": frequency,
+                # Stream amount stored as negative (outflow) per Monarch convention
+                "amount": -abs(stream_amount),
+                "isApproximate": is_approximate,
+                "merchant": {
+                    "id": f"merch-{i}",
+                    "name": merchant_name,
+                    "logoUrl": None,
+                    "__typename": "RecurringTransactionStream",
+                },
+                "__typename": "RecurringTransactionStream",
+            },
+            "date": r.get("date", "2026-05-15"),
+            "isPast": is_past,
+            "transactionId": transaction_id,
+            # Actual amount negative (outflow) per Monarch convention
+            "amount": -abs(actual_amount),
+            "amountDiff": amount_diff,
+            "category": {
+                "id": f"cat-recur-{i}",
+                "name": r.get("category", "Bills & Utilities"),
+                "__typename": "Category",
+            },
+            "account": {
+                "id": "mock-account-1",
+                "displayName": "Mock Checking",
+                "logoUrl": None,
+                "__typename": "Account",
+            },
+            "__typename": "RecurringTransactionItem",
+        })
+    return {"data": {"recurringTransactionItems": items}}
+
+
+def _handle_get_snapshots_by_account_type(body: dict) -> dict:
+    """GetSnapshotsByAccountType → {snapshotsByAccountType[], accountTypes[]}
+
+    Returns monthly net-worth snapshots per account type (ADR 0003).
+    The flat list is grouped client-side by the production tool.
+    Balance is negative for liability types (credit, loan) per Monarch convention.
+    """
+    fixtures = get_fixtures()
+    snapshots = []
+    seen_types: dict[str, str] = {}  # type → group
+    for row in fixtures.get("snapshots_by_type", []):
+        account_type = row.get("account_type", "depository")
+        balance = float(row.get("balance", 0.0))
+        month = row.get("month", "2026-05")
+        snapshots.append({
+            "accountType": account_type,
+            "month": month,
+            "balance": balance,
+            "__typename": "AccountTypeSnapshot",
+        })
+        # Infer group from type name: credit/loan are liabilities, rest are assets
+        if account_type not in seen_types:
+            group = "liability" if account_type in ("credit", "loan") else "asset"
+            seen_types[account_type] = group
+
+    account_types = [
+        {"name": atype, "group": group, "__typename": "AccountType"}
+        for atype, group in seen_types.items()
+    ]
+    return {
+        "data": {
+            "snapshotsByAccountType": snapshots,
+            "accountTypes": account_types,
+        }
+    }
+
+
 _OPERATION_HANDLERS: dict[str, Any] = {
     # Real operations (validated in ADR 0002)
     "GetAccounts": _handle_get_accounts,
@@ -621,6 +726,9 @@ _OPERATION_HANDLERS: dict[str, Any] = {
     "GetJointPlanningData": _handle_get_joint_planning_data,
     "GetHouseholdTransactionTags": _handle_get_household_transaction_tags,
     "Common_UpdateTransactionMutation": _handle_common_update_transaction,
+    # Epic B operations (validated in ADR 0003)
+    "Web_GetUpcomingRecurringTransactionItems": _handle_web_get_upcoming_recurring,
+    "GetSnapshotsByAccountType": _handle_get_snapshots_by_account_type,
 }
 
 
