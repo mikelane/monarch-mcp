@@ -15,6 +15,9 @@ goals.toml
 # Reference clones & scratch (local only)
 .tools/
 
+# Git worktrees (development isolation; never versioned)
+.worktrees/
+
 # Python / behave
 __pycache__/
 *.pyc
