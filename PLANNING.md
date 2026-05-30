@@ -29,7 +29,10 @@ Epics: **A** (core: auth+read+goals+tidy) → **B** (forward-looking) → **C** 
 - [ ] No money-movement/create/delete/budget-edit tool exists in the binary.
 - [ ] BDD scenarios for all four tool jobs pass (GREEN); unit coverage on client + tool math.
 
-### A0 — Spike: prove Rust auth + one read query  ✂ ☐
+### A0 — Spike: prove Rust auth + one read query  ✂ ☑ DONE (2026-05-29)
+- **Result: PASSED.** Rust `reqwest` authenticated + read accounts against live
+  `api.monarch.com`, no bot wall. Apple-OAuth required adding a password. See
+  `docs/decisions/0001-monarch-auth-flow.md`. Spike branch kept locally as porting ref.
 - Branch `spike/monarch-auth` (never merged). Time-box: one session. **No TDD.**
 - Prove: POST `/auth/login/` (password) → handle `403` MFA → re-POST `totp` → persist
   `{token}` → `Authorization: Token {token}` → run `GetAccounts`. Confirm the **live
@@ -114,6 +117,6 @@ Own spec→plan→build cycle when reached.
 ## Tier 3 backlog (later): `investment_review`, `scenario_model`, `debt_payoff_planner`, `annual_summary`.
 
 ## Immediate next action
-Start **A0 (spike)** on branch `spike/monarch-auth`, time-boxed to one session, producing
-`docs/decisions/0001-monarch-auth-flow.md`. Everything else is blocked on knowing the auth
-flow works from Rust.
+A0 done. Start **A1 (BDD bootstrap)**: stand up the Python + behave harness with a mock
+Monarch GraphQL server, write `@ISSUE-A5..A8 @not_implemented` scenarios for the Tier-1 tool
+jobs, and confirm they FAIL (RED). A1 blocks all of A2–A8.
