@@ -1,4 +1,4 @@
-@ISSUE-B2 @not_implemented
+@ISSUE-B2
 Feature: Net worth trend
   A single net-worth number is a snapshot; a trend tells the story. This tool
   returns net worth across a date range, shows how each account type contributed
