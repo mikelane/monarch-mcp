@@ -10,6 +10,7 @@
 //!   MONARCH_TOKEN        — if set, use as session token and skip interactive login
 //!   MONARCH_GOALS_FILE   — path to the TOML goals file for progress_vs_goals
 
+mod cashflow_forecast;
 mod client;
 mod error;
 mod financial_overview;
