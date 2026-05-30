@@ -1,0 +1,37 @@
+# release-plz configuration
+# https://release-plz.dev/docs/config
+#
+# Integration contract with cargo-dist:
+#   release-plz  →  bumps version + updates CHANGELOG + opens Release PR + publishes to crates.io + pushes git tag
+#   cargo-dist   →  listens for the git tag → builds cross-platform binaries → creates GitHub Release
+#
+# Therefore release-plz must NOT create GitHub Releases (git_release_enable = false)
+# so that cargo-dist's release.yml owns that step entirely.
+
+[workspace]
+# Push the git tag so cargo-dist's release.yml triggers on it.
+git_tag_enable = true
+
+# Do NOT create a GitHub Release — cargo-dist does that when it sees the new tag.
+git_release_enable = false
+
+# Update CHANGELOG.md using Keep-a-Changelog format from Conventional Commits.
+changelog_update = true
+
+# Commit the CHANGELOG + version bump together.
+changelog_commit_message = "chore: release {{package}} {{version}}"
+
+[changelog]
+# Conventional Commits → CHANGELOG section mapping.
+commit_parsers = [
+  { message = "^feat", group = "### Added" },
+  { message = "^fix", group = "### Fixed" },
+  { message = "^perf", group = "### Performance" },
+  { message = "^refactor", group = "### Changed" },
+  { message = "^docs", group = "### Documentation" },
+  { message = "^test", group = "### Testing" },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore", group = "### Miscellaneous" },
+  { message = "^style", group = "### Miscellaneous" },
+  { message = "^ci", group = "### Miscellaneous" },
+]
