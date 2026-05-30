@@ -65,19 +65,36 @@ pub fn actual_savings_rate_pct(cashflow: &Cashflow) -> f64 {
     (cashflow.income - cashflow.spending) / cashflow.income * 100.0
 }
 
-/// Compute months of expenses covered by savings-type accounts.
-/// reserves_months = total_savings_balance / monthly_spending
+/// Compute months of expenses covered by liquid cash-equivalent accounts.
+///
+/// `reserves_months = total_liquid_balance / monthly_spending`
 /// Returns 0.0 when monthly spending is zero.
+///
+/// Liquid cash-equivalent types (included):
+///   - `"savings"`      — traditional savings / HYSA
+///   - `"checking"`     — checking / demand-deposit accounts
+///   - `"depository"`   — Monarch's catch-all for bank deposit accounts
+///   - `"money_market"` — money-market accounts / funds
+///
+/// Excluded: `"brokerage"`, `"investment"`, `"retirement"`, `"credit"`, `"loan"`,
+/// and any other type not in the above list.  Investment/retirement balances are
+/// not immediately liquid; liability balances would distort the runway figure.
+///
+/// Semantics rationale: an emergency fund is the cash you can tap in 1–3 business
+/// days without selling assets or incurring penalties.  Brokerage accounts require
+/// a T+2 settlement cycle and market-risk exposure; retirement accounts carry
+/// withdrawal penalties.  Only deposit-type accounts qualify.
 pub fn actual_reserve_months(accounts: &[Account], cashflow: &Cashflow) -> f64 {
     if cashflow.spending == 0.0 {
         return 0.0;
     }
-    let savings_balance: f64 = accounts
+    const LIQUID_TYPES: &[&str] = &["savings", "checking", "depository", "money_market"];
+    let liquid_balance: f64 = accounts
         .iter()
-        .filter(|a| a.account_type.name == "savings")
+        .filter(|a| LIQUID_TYPES.contains(&a.account_type.name.as_str()))
         .map(|a| a.current_balance)
         .sum();
-    savings_balance / cashflow.spending
+    liquid_balance / cashflow.spending
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +248,80 @@ mod tests {
         }
     }
 
+    fn money_market_account(balance: f64) -> Account {
+        Account {
+            id: "mm1".to_string(),
+            display_name: "HYSA".to_string(),
+            current_balance: balance,
+            account_type: AccountType { name: "money_market".to_string() },
+        }
+    }
+
+    fn brokerage_account(balance: f64) -> Account {
+        Account {
+            id: "b1".to_string(),
+            display_name: "Brokerage".to_string(),
+            current_balance: balance,
+            account_type: AccountType { name: "brokerage".to_string() },
+        }
+    }
+
+    fn retirement_account(balance: f64) -> Account {
+        Account {
+            id: "r1".to_string(),
+            display_name: "401k".to_string(),
+            current_balance: balance,
+            account_type: AccountType { name: "retirement".to_string() },
+        }
+    }
+
+    // 9a RED: money-market should count as liquid reserves
+    #[test]
+    fn reserve_months_counts_money_market() {
+        // 20000 money-market / 5000 spending = 4 months
+        let accounts = vec![money_market_account(20000.0)];
+        let cf = cashflow(6000.0, 5000.0);
+        assert_eq!(actual_reserve_months(&accounts, &cf), 4.0);
+    }
+
+    // 9a RED: checking should count as liquid reserves
+    #[test]
+    fn reserve_months_counts_checking() {
+        // 10000 checking / 5000 spending = 2 months
+        let accounts = vec![checking_account(10000.0)];
+        let cf = cashflow(6000.0, 5000.0);
+        assert_eq!(actual_reserve_months(&accounts, &cf), 2.0);
+    }
+
+    // 9a RED: savings + checking + money_market all combined
+    #[test]
+    fn reserve_months_combines_all_liquid_types() {
+        // 30000 + 10000 + 20000 = 60000 / 5000 = 12 months
+        let accounts = vec![
+            savings_account(30000.0),
+            checking_account(10000.0),
+            money_market_account(20000.0),
+        ];
+        let cf = cashflow(6000.0, 5000.0);
+        assert_eq!(actual_reserve_months(&accounts, &cf), 12.0);
+    }
+
+    // 9c TRIANGULATE: brokerage must NOT count toward reserves
+    #[test]
+    fn reserve_months_excludes_brokerage() {
+        let accounts = vec![savings_account(30000.0), brokerage_account(100000.0)];
+        let cf = cashflow(6000.0, 5000.0);
+        assert_eq!(actual_reserve_months(&accounts, &cf), 6.0);
+    }
+
+    // 9c TRIANGULATE: retirement must NOT count toward reserves
+    #[test]
+    fn reserve_months_excludes_retirement() {
+        let accounts = vec![savings_account(30000.0), retirement_account(200000.0)];
+        let cf = cashflow(6000.0, 5000.0);
+        assert_eq!(actual_reserve_months(&accounts, &cf), 6.0);
+    }
+
     #[test]
     fn reserve_months_divides_savings_by_spending() {
         // 30000 savings / 5000 spending = 6 months
@@ -240,9 +331,9 @@ mod tests {
     }
 
     #[test]
-    fn reserve_months_ignores_non_savings_accounts() {
-        // Only savings accounts count; checking is excluded
-        let accounts = vec![savings_account(30000.0), checking_account(10000.0)];
+    fn reserve_months_ignores_non_liquid_accounts() {
+        // Only liquid-cash-equivalent types count; brokerage is excluded
+        let accounts = vec![savings_account(30000.0), brokerage_account(10000.0)];
         let cf = cashflow(6000.0, 5000.0);
         assert_eq!(actual_reserve_months(&accounts, &cf), 6.0);
     }
@@ -255,8 +346,9 @@ mod tests {
     }
 
     #[test]
-    fn reserve_months_no_savings_accounts_returns_zero() {
-        let accounts = vec![checking_account(10000.0)];
+    fn reserve_months_no_liquid_accounts_returns_zero() {
+        // Only non-liquid accounts (brokerage) — reserves = 0
+        let accounts = vec![brokerage_account(10000.0)];
         let cf = cashflow(6000.0, 5000.0);
         assert_eq!(actual_reserve_months(&accounts, &cf), 0.0);
     }
