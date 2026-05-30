@@ -18,9 +18,6 @@ git_release_enable = false
 # Update CHANGELOG.md using Keep-a-Changelog format from Conventional Commits.
 changelog_update = true
 
-# Commit the CHANGELOG + version bump together.
-changelog_commit_message = "chore: release {{package}} {{version}}"
-
 [changelog]
 # Conventional Commits → CHANGELOG section mapping.
 commit_parsers = [
