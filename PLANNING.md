@@ -119,7 +119,11 @@ Own spec→plan→build cycle when reached.
 ## Deferred bugs (Gate 3 adversarial findings, MEDIUM)
 - **B1 — emergency-fund reserve detection too narrow** (`src/progress_vs_goals.rs`): counts only `account_type.name == "savings"`; a money-market/HYSA/brokerage emergency fund reads as $0 → false "off". Broaden the asset set or classify by sign (as `financial_overview` does).
 - **B2 — no graceful degradation on partial/null Monarch responses** (`src/client.rs`): bare `f64` fields lack `#[serde(default)]`; a single `null` balance (unsynced account) fails the whole accounts parse. Add defaults / per-element skip per the spec's "degrade gracefully" goal.
-- **B3 — test runs pollute the real user session file** (`src/client.rs` + `bdd/`): running the binary under behave wrote to the real `~/.config/monarch-mcp/session.json`, clobbering the user's token. Tests must isolate config (override HOME or a `MONARCH_CONFIG_DIR`/`XDG_CONFIG_HOME` to a temp dir); the binary should not persist a token that came from `MONARCH_TOKEN` env.
+- **B3 — test runs pollute the real user session file** — ✅ FIXED in C1 (`config_dir()` honors `MONARCH_CONFIG_DIR`/`XDG_CONFIG_HOME`).
+- **D-NWT — net_worth_trend fabricates a swing for accounts opened/closed mid-window** (`src/net_worth_trend.rs`): a type absent in the earliest month gets a 0 baseline, so `change = latest − 0` (e.g. a brokerage opened mid-window reports a +$50k "move" and wins biggest_mover). Needs a domain decision: use the type's first-seen month as its baseline, or label it "new account". Gate 3 finding (deferred).
+
+### Systemic lesson (recurring): mocks must include documented-nullable shapes
+Three times now (C1 invented cashflow query, C1 negative budget, Tier-2 null `amountDiff`/`merchant`) a fully-populated mock hid a real-Monarch shape. **When building any mock fixture, include the null/edge cases the ADR documents** — and rely on the live tier to catch the rest.
 
 ## Progress
 - **Epic A — DONE.** All 4 Tier-1 tools built (TDD), Gate 1 + Gate 3 run/remediated.
