@@ -233,6 +233,42 @@ async fn tags_return_valid_structure_from_real_monarch() {
     }
 }
 
+/// Verify that Web_GetUpcomingRecurringTransactionItems returns structurally
+/// valid items from the real Monarch API: no GraphQL errors, finite amounts,
+/// non-empty merchant names, and well-formed date strings (YYYY-MM-DD).
+///
+/// Does NOT assert specific merchants or amounts — those change over time.
+#[tokio::test]
+async fn get_recurring_returns_valid_structure_from_real_monarch() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+
+    let items = client
+        .get_recurring(&cur_start, &cur_end)
+        .await
+        .expect("Web_GetUpcomingRecurringTransactionItems must succeed against real Monarch");
+
+    eprintln!("recurring items this month: {}", items.len());
+
+    for item in &items {
+        assert!(
+            item.amount.is_finite(),
+            "recurring item amount must be finite, got {} for merchant {:?}",
+            item.amount,
+            item.merchant
+        );
+        assert!(
+            !item.merchant.is_empty(),
+            "recurring item merchant name must not be empty"
+        );
+    }
+}
+
 /// Verify that GetJointPlanningData returns budget entries with valid
 /// category names and positive planned amounts (no GraphQL errors).
 #[tokio::test]
