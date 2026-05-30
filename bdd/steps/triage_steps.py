@@ -72,14 +72,14 @@ def step_uncategorized_only(context, merchant: str):
 
 @given('a proposed change categorizing the "{merchant}" transaction as {category}')
 def step_proposed_change(context, merchant: str, category: str):
-    context._proposed_changeset = [{"merchant": merchant, "category": category}]
+    txn_id = "txn-1"
     uncategorized = [
         {
             "merchant": merchant,
             "amount": 5.50,
             "category": "Uncategorized",
             "date": "2026-05-20",
-            "id": "txn-1",
+            "id": txn_id,
         }
     ]
     requests.post(
@@ -89,6 +89,10 @@ def step_proposed_change(context, merchant: str, category: str):
             "transactions": uncategorized,
         },
     )
+    # Use the transaction id in the changeset — the apply_changeset tool
+    # requires an explicit id; merchant-based lookup was removed when
+    # ChangeEntry adopted deny_unknown_fields (see triage.rs).
+    context._proposed_changeset = [{"id": txn_id, "category": category}]
 
 
 @given("a proposed change categorizing one transaction as {category}")

@@ -53,6 +53,11 @@ class McpClient:
         env.setdefault("MONARCH_TOKEN", "mock-test-token-abc123")
         if self._goals_file:
             env["MONARCH_GOALS_FILE"] = self._goals_file
+        # Redirect session storage to a temp dir so BDD tests never touch
+        # the real ~/.config/monarch-mcp/session.json (Phase 5 / B5).
+        import tempfile as _tempfile
+        self._session_tmpdir = _tempfile.mkdtemp(prefix="monarch_bdd_session_")
+        env["MONARCH_CONFIG_DIR"] = self._session_tmpdir
 
         if not Path(self._bin).exists():
             raise FileNotFoundError(
@@ -72,7 +77,7 @@ class McpClient:
         self._initialize()
 
     def stop(self) -> None:
-        """Terminate the MCP server process."""
+        """Terminate the MCP server process and clean up session temp dir."""
         if self._process is not None:
             self._process.terminate()
             try:
@@ -80,6 +85,10 @@ class McpClient:
             except subprocess.TimeoutExpired:
                 self._process.kill()
             self._process = None
+        if hasattr(self, "_session_tmpdir") and self._session_tmpdir:
+            import shutil as _shutil
+            _shutil.rmtree(self._session_tmpdir, ignore_errors=True)
+            self._session_tmpdir = None
 
     # ------------------------------------------------------------------
     # MCP protocol
