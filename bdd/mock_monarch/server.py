@@ -187,11 +187,18 @@ def get_applied_changes() -> Any:
 # ---------------------------------------------------------------------------
 
 def _make_account(index: int, acct: dict) -> dict:
-    """Build one account in real GetAccounts shape."""
+    """Build one account in real GetAccounts shape.
+
+    When the fixture sets currentBalance=None, the mock passes null through to
+    the client — matching real Monarch behaviour for unsynced/manual accounts.
+    The client must handle null gracefully (Bug B2: use serde default=0.0).
+    """
+    # Use sentinel to distinguish "not set" (default 0.0) from explicit None (null).
+    raw_balance = acct.get("currentBalance", 0.0)
     return {
         "id": str(acct.get("id", index)),
         "displayName": acct.get("name", f"Account {index}"),
-        "currentBalance": acct.get("currentBalance", 0.0),
+        "currentBalance": raw_balance,  # None serialises as JSON null — intentional
         "isHidden": False,
         "type": {
             "name": acct.get("type", "depository"),

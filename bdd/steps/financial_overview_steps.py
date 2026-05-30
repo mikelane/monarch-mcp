@@ -95,6 +95,25 @@ def step_no_accounts(context):
     requests.post(f"{context.mock_base}/configure", json={"accounts": []})
 
 
+@given("the household has accounts including one with a null balance")
+def step_accounts_with_null_balance(context):
+    """Configure accounts where one has currentBalance=null (unsynced/manual account).
+
+    Verifies Bug B2 fix: a null balance must not fail the entire accounts parse.
+    The synced account (5000) still contributes to net worth; the null-balance
+    account is treated as 0 and not dropped from the list.
+    """
+    requests.post(
+        f"{context.mock_base}/configure",
+        json={
+            "accounts": [
+                {"name": "Checking", "type": "checking", "currentBalance": 5000.0},
+                {"name": "Unsynced Account", "type": "savings", "currentBalance": None},
+            ]
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # When
 # ---------------------------------------------------------------------------
@@ -162,4 +181,17 @@ def step_assert_net_worth_change(context, amount: int):
     actual = result.get("net_worth_change")
     assert actual == float(amount), (
         f"Expected net-worth change +{amount}, got {actual!r}. Full result: {result}"
+    )
+
+
+@then("the accounts still load and the overview reports a net worth of {amount:d} dollars")
+def step_assert_accounts_load_with_null_balance(context, amount: int):
+    """Assert overview succeeded (null balance did not kill the parse) and net worth is correct."""
+    result = context.overview_result
+    assert result is not None, "overview must succeed even with a null-balance account"
+    assert "error" not in result, f"overview must not return an error; got: {result}"
+    actual = result.get("net_worth")
+    assert actual == float(amount), (
+        f"Expected net worth {amount} (null balance = 0, synced = 5000), got {actual!r}. "
+        f"Full result: {result}"
     )

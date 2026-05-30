@@ -50,6 +50,19 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
 // Monarch's real response shapes into these internal types.
 // ---------------------------------------------------------------------------
 
+/// Deserialize a JSON number-or-null as `f64`, mapping `null` to `0.0`.
+///
+/// Monarch sends `null` for `currentBalance` on unsynced or manually-tracked
+/// accounts. Serde's `#[serde(default)]` attribute only handles *missing* fields;
+/// an explicit `null` still fails a bare `f64`. This deserializer handles both.
+fn deserialize_null_f64_as_zero<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<f64> = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or(0.0))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Account {
     #[allow(dead_code)]
@@ -57,7 +70,10 @@ pub struct Account {
     #[serde(rename = "displayName")]
     #[allow(dead_code)]
     pub display_name: String,
-    #[serde(rename = "currentBalance")]
+    /// Monarch sends `null` for unsynced or manually-tracked accounts.
+    /// A null balance means "balance unknown" — we treat it as 0.0 so one
+    /// unsynced account never fails the entire accounts parse.
+    #[serde(rename = "currentBalance", deserialize_with = "deserialize_null_f64_as_zero")]
     pub current_balance: f64,
     #[serde(rename = "type")]
     pub account_type: AccountType,
@@ -152,6 +168,8 @@ struct AccountTypeSnapshotRaw {
     #[serde(rename = "accountType")]
     pub account_type: String,
     pub month: String,
+    /// Null when Monarch has not yet snapshotted this type for a given month.
+    #[serde(deserialize_with = "deserialize_null_f64_as_zero")]
     pub balance: f64,
 }
 
@@ -192,15 +210,21 @@ struct RecurringMerchantRaw {
 struct AggregateSnapshot {
     #[allow(dead_code)]
     pub date: String,
+    /// Null when Monarch hasn't computed a snapshot for the date yet.
+    #[serde(deserialize_with = "deserialize_null_f64_as_zero")]
     pub balance: f64,
 }
 
 /// `summary: aggregates(…, fillEmptyValues: true)[0].summary`
+///
+/// `fillEmptyValues: true` was supposed to prevent nulls, but real Monarch
+/// occasionally returns null for periods with no activity. Both fields use
+/// the null-to-zero deserializer so a missing cashflow period yields 0 not an error.
 #[derive(Debug, Deserialize)]
 struct CashflowSummaryRaw {
-    #[serde(rename = "sumIncome")]
+    #[serde(rename = "sumIncome", deserialize_with = "deserialize_null_f64_as_zero")]
     pub sum_income: f64,
-    #[serde(rename = "sumExpense")]
+    #[serde(rename = "sumExpense", deserialize_with = "deserialize_null_f64_as_zero")]
     pub sum_expense: f64,
 }
 
@@ -1380,6 +1404,65 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // GetAccounts: null currentBalance — graceful degradation (Bug B2)
+    // -----------------------------------------------------------------------
+
+    // 9a RED: a null currentBalance on one account must not fail the whole parse.
+    // Real Monarch sends null for unsynced accounts. Previously this failed the
+    // entire serde_json::from_value call, losing all accounts.
+    #[tokio::test]
+    async fn get_accounts_null_balance_does_not_fail_entire_parse() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "accounts": [
+                        {
+                            "id": "acct-ok",
+                            "displayName": "Checking",
+                            "currentBalance": 5000.0,
+                            "isHidden": false,
+                            "type": {"name": "checking", "display": "Checking", "__typename": "AccountType"},
+                            "subtype": {"name": "checking", "display": "Checking", "__typename": "AccountSubtype"},
+                            "__typename": "Account"
+                        },
+                        {
+                            "id": "acct-unsynced",
+                            "displayName": "Unsynced Account",
+                            "currentBalance": null,
+                            "isHidden": false,
+                            "type": {"name": "savings", "display": "Savings", "__typename": "AccountType"},
+                            "subtype": {"name": "savings", "display": "Savings", "__typename": "AccountSubtype"},
+                            "__typename": "Account"
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let result = client.get_accounts().await;
+        assert!(
+            result.is_ok(),
+            "null currentBalance must not fail the whole parse; got: {:?}",
+            result.err()
+        );
+        let accounts = result.unwrap();
+        // Both accounts survive — null balance → 0.0
+        assert_eq!(accounts.len(), 2, "both accounts should be returned");
+        let unsynced = accounts.iter().find(|a| a.id == "acct-unsynced").unwrap();
+        assert!(
+            unsynced.current_balance.abs() < f64::EPSILON,
+            "null balance must default to 0.0, got {}",
+            unsynced.current_balance
+        );
+        let ok = accounts.iter().find(|a| a.id == "acct-ok").unwrap();
+        assert!((ok.current_balance - 5000.0).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
     // GetTransactionsList: real allTransactions.results[] shape
     // -----------------------------------------------------------------------
 
@@ -1530,6 +1613,48 @@ mod tests {
         let client = client_for(&server.uri());
         let h = client.get_net_worth_history("2026-04-01", "2026-04-30").await.unwrap();
         assert_eq!(h.prior_month_net_worth, 68500.00);
+    }
+
+    // -----------------------------------------------------------------------
+    // Null cashflow sums — graceful degradation (Bug B2 triangulation)
+    // -----------------------------------------------------------------------
+
+    // 9c TRIANGULATE: null sumIncome/sumExpense must not fail the cashflow parse.
+    // Monarch can return null for these when there is no activity in the period.
+    #[tokio::test]
+    async fn get_cashflow_null_sums_default_to_zero() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "summary": [
+                        {
+                            "summary": {
+                                "sumIncome": null,
+                                "sumExpense": null,
+                                "savings": null,
+                                "savingsRate": null,
+                                "__typename": "AggregateSummary"
+                            },
+                            "__typename": "Aggregate"
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let result = client.get_cashflow("2026-05-01", "2026-05-31", "2026-04-01", "2026-04-30").await;
+        assert!(
+            result.is_ok(),
+            "null cashflow sums must not fail the parse; got: {:?}",
+            result.err()
+        );
+        let cf = result.unwrap();
+        assert!((cf.income - 0.0).abs() < f64::EPSILON, "null sumIncome should be 0.0");
+        assert!((cf.spending - 0.0).abs() < f64::EPSILON, "null sumExpense should be 0.0");
     }
 
     // -----------------------------------------------------------------------

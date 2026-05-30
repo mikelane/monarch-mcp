@@ -43,6 +43,13 @@ Feature: Financial overview snapshot
       Then the overview reports a net worth of 70000 dollars
       And the overview reports a net-worth change of positive 2000 dollars
 
+  Rule: Accounts with null balances are tolerated — other accounts still load
+
+    Scenario: An unsynced account with null balance does not lose all accounts
+      Given the household has accounts including one with a null balance
+      When the advisor requests a financial overview
+      Then the accounts still load and the overview reports a net worth of 5000 dollars
+
   Rule: An empty financial picture is reported as zeros, not an error
 
     Scenario: No accounts and no activity yields a zero overview
