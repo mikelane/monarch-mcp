@@ -159,10 +159,18 @@ pub fn compute_trend(snapshots: &[AccountTypeSnapshot]) -> TrendResult {
 
     // Biggest mover: account type with the largest absolute change.
     // Only meaningful when there are 2+ months.
+    // Tie-break by account_type ascending so equal-magnitude moves always
+    // produce the same winner regardless of HashMap iteration order.
     let biggest_mover = if months.len() >= 2 {
         by_account_type
             .iter()
-            .max_by(|a, b| a.1.change.abs().partial_cmp(&b.1.change.abs()).unwrap())
+            .max_by(|a, b| {
+                a.1.change
+                    .abs()
+                    .partial_cmp(&b.1.change.abs())
+                    .unwrap()
+                    .then_with(|| b.0.cmp(a.0))
+            })
             .map(|(t, s)| BiggestMover { account_type: t.clone(), change: s.change })
     } else {
         None
@@ -263,7 +271,6 @@ mod tests {
         // earliest NW: 10000 + 50000 + (-5000) = 55000
         // latest NW:   12000 + 54000 + (-4600) = 61400
         // change = 61400 - 55000 = 6400
-        // (BDD scenario expects 6200 — see implementation note in compute_trend)
         assert!((result.net_worth_change - 6_400.0).abs() < 0.01);
     }
 

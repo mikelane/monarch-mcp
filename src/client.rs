@@ -164,13 +164,17 @@ struct RecurringTransactionItemRaw {
     pub amount: f64,
     /// Difference between actual and stream amount (actual − stream).
     /// Positive = price increase, negative = price decrease.
+    /// Null when the stream has no prior occurrence to diff against (new stream).
+    /// A null diff means "no measurable drift" — must not be flagged as creeping.
     #[serde(rename = "amountDiff")]
-    pub amount_diff: f64,
+    pub amount_diff: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RecurringStreamRaw {
-    pub merchant: RecurringMerchantRaw,
+    /// Null when Monarch cannot resolve the merchant for a stream.
+    /// Display name defaults to "Unknown" when absent.
+    pub merchant: Option<RecurringMerchantRaw>,
     /// Monarch's expected amount for this stream (negative = outflow).
     pub amount: f64,
     /// True for utility-style streams whose amount varies by design.
@@ -928,7 +932,7 @@ impl MonarchClient {
         Ok(raw
             .into_iter()
             .map(|r| crate::cashflow_forecast::RecurringItem {
-                merchant: r.stream.merchant.name,
+                merchant: r.stream.merchant.map(|m| m.name).unwrap_or_else(|| "Unknown".to_string()),
                 amount: r.amount,
                 is_past: r.is_past,
             })
@@ -996,10 +1000,11 @@ impl MonarchClient {
         Ok(raw
             .into_iter()
             .map(|r| crate::recurring_scan::RecurringScanItem {
-                merchant: r.stream.merchant.name,
+                merchant: r.stream.merchant.map(|m| m.name).unwrap_or_else(|| "Unknown".to_string()),
                 stream_amount: r.stream.amount,
                 actual_amount: r.amount,
-                amount_diff: r.amount_diff,
+                // Null diff means no prior occurrence to compare — treat as zero drift.
+                amount_diff: r.amount_diff.unwrap_or(0.0),
                 is_approximate: r.stream.is_approximate,
                 is_past: r.is_past,
             })
