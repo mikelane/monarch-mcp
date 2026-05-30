@@ -4,6 +4,7 @@ use crate::cashflow_forecast::compute_forecast;
 use crate::client::MonarchClient;
 use crate::error::MonarchError;
 use crate::financial_overview::compute_overview;
+use crate::net_worth_trend::compute_trend;
 use crate::goals::Goals;
 use crate::progress_vs_goals::compute_progress;
 use crate::spending_report::compute_spending_report;
@@ -18,6 +19,13 @@ use rmcp::{
 use rmcp::schemars;
 use serde::Deserialize;
 use serde_json::json;
+
+/// Input parameters for the `net_worth_trend` tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NetWorthTrendParams {
+    /// Number of months of history to include (1–24).
+    pub months: u32,
+}
 
 /// Input parameters for the `apply_changeset` tool.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -188,11 +196,27 @@ impl MonarchTools {
     async fn net_worth_trend(
         &self,
         _ctx: RequestContext<RoleServer>,
+        Parameters(params): Parameters<NetWorthTrendParams>,
     ) -> Result<CallToolResult, McpError> {
-        Err(McpError::invalid_request(
-            "net_worth_trend is not yet implemented (Epic B — ISSUE-B2)",
-            None,
-        ))
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_trend(&client, params.months).await {
+            Ok(trend) => serde_json::to_value(&trend)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
     }
 
     #[tool(description = "Scan recurring charges for amount drift ('creeping' subscriptions \
@@ -403,6 +427,55 @@ async fn fetch_and_compute_forecast(
         .sum();
 
     Ok(compute_forecast(current_balance, &recurring))
+}
+
+async fn fetch_and_compute_trend(
+    client: &MonarchClient,
+    months: u32,
+) -> Result<crate::net_worth_trend::TrendResult, MonarchError> {
+    // Build a start date `months` months back from today (first of that month).
+    let start_date = months_ago_start(months);
+    let snapshots = client.get_snapshots_by_account_type(&start_date).await?;
+    Ok(compute_trend(&snapshots))
+}
+
+/// Compute the ISO date for the first day of the month that is `n` months before today.
+///
+/// Uses only integer arithmetic on the Unix epoch — no external date library needed.
+fn months_ago_start(n: u32) -> String {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today_days = (now_secs / 86_400) as i64;
+    let (mut year, mut month, _) = epoch_days_to_ymd(today_days);
+
+    for _ in 0..n {
+        if month == 1 {
+            year -= 1;
+            month = 12;
+        } else {
+            month -= 1;
+        }
+    }
+    format!("{year:04}-{month:02}-01")
+}
+
+/// Convert a count of days since Unix epoch to (year, month, day).
+///
+/// Uses the Gregorian calendar algorithm from Howard Hinnant's date library.
+fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m as u32, d as u32)
 }
 
 async fn apply_approved_changeset(

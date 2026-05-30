@@ -146,6 +146,15 @@ pub struct Tag {
 // Raw GraphQL response deserialization helpers (Monarch's real shapes)
 // ---------------------------------------------------------------------------
 
+/// One item from `snapshotsByAccountType[]` (ADR 0003).
+#[derive(Debug, Deserialize)]
+struct AccountTypeSnapshotRaw {
+    #[serde(rename = "accountType")]
+    pub account_type: String,
+    pub month: String,
+    pub balance: f64,
+}
+
 /// One item from `recurringTransactionItems[]` (ADR 0003).
 #[derive(Debug, Deserialize)]
 struct RecurringTransactionItemRaw {
@@ -917,6 +926,55 @@ impl MonarchClient {
             .collect())
     }
 
+    /// Fetch monthly net-worth snapshots grouped by account type (ADR 0003).
+    ///
+    /// Uses `GetSnapshotsByAccountType` — the real Monarch operation validated against
+    /// live data. Returns a flat list of `AccountTypeSnapshot` values; callers group
+    /// client-side by `account_type` or `month` as needed.
+    ///
+    /// `start_date` is an ISO-8601 date (`YYYY-MM-DD`). `timeframe` is `"month"`.
+    /// HTTP 401 maps to `SessionExpired`.
+    pub async fn get_snapshots_by_account_type(
+        &self,
+        start_date: &str,
+    ) -> Result<Vec<crate::net_worth_trend::AccountTypeSnapshot>, MonarchError> {
+        let data = self
+            .graphql(
+                "GetSnapshotsByAccountType",
+                "query GetSnapshotsByAccountType($startDate: Date!, $timeframe: Timeframe!) {
+                  snapshotsByAccountType(startDate: $startDate, timeframe: $timeframe) {
+                    accountType
+                    month
+                    balance
+                    __typename
+                  }
+                  accountTypes {
+                    name
+                    group
+                    __typename
+                  }
+                }",
+                json!({
+                    "startDate": start_date,
+                    "timeframe": "month",
+                }),
+            )
+            .await?;
+
+        let raw: Vec<AccountTypeSnapshotRaw> =
+            serde_json::from_value(data["snapshotsByAccountType"].clone())
+                .map_err(|e| MonarchError::Internal(format!("parse snapshots by type: {e}")))?;
+
+        Ok(raw
+            .into_iter()
+            .map(|r| crate::net_worth_trend::AccountTypeSnapshot {
+                account_type: r.account_type,
+                month: r.month,
+                balance: r.balance,
+            })
+            .collect())
+    }
+
     /// Apply a category/tags/notes change to a single transaction.
     ///
     /// Uses `Common_UpdateTransactionMutation` with the `input: {id, …}` shape
@@ -1479,6 +1537,74 @@ mod tests {
         let client = client_for(&server.uri());
         let items = client.get_recurring("2026-05-01", "2026-05-31").await.unwrap();
         assert!(items.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // GetSnapshotsByAccountType: real response shape (ADR 0003)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_snapshots_by_account_type_parses_real_response_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "snapshotsByAccountType": [
+                        {"accountType": "depository", "month": "2026-04", "balance": 10000.0, "__typename": "AccountTypeSnapshot"},
+                        {"accountType": "brokerage",  "month": "2026-04", "balance": 40000.0, "__typename": "AccountTypeSnapshot"},
+                        {"accountType": "credit",     "month": "2026-04", "balance": -3000.0, "__typename": "AccountTypeSnapshot"},
+                    ],
+                    "accountTypes": [
+                        {"name": "depository", "group": "asset",     "__typename": "AccountType"},
+                        {"name": "brokerage",  "group": "asset",     "__typename": "AccountType"},
+                        {"name": "credit",     "group": "liability", "__typename": "AccountType"},
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let snaps = client.get_snapshots_by_account_type("2026-04-01").await.unwrap();
+        assert_eq!(snaps.len(), 3);
+        assert_eq!(snaps[0].account_type, "depository");
+        assert_eq!(snaps[0].month, "2026-04");
+        assert!((snaps[0].balance - 10000.0).abs() < 0.01);
+        assert!((snaps[2].balance - (-3000.0)).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn get_snapshots_by_account_type_returns_empty_on_no_data() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "snapshotsByAccountType": [],
+                    "accountTypes": []
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let snaps = client.get_snapshots_by_account_type("2026-04-01").await.unwrap();
+        assert!(snaps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_snapshots_by_account_type_401_maps_to_session_expired() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token."})))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let err = client.get_snapshots_by_account_type("2026-04-01").await.unwrap_err();
+        assert!(matches!(err, MonarchError::SessionExpired));
     }
 
     #[tokio::test]

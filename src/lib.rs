@@ -9,6 +9,7 @@ pub mod client;
 pub mod error;
 pub mod financial_overview;
 pub mod goals;
+pub mod net_worth_trend;
 pub mod progress_vs_goals;
 pub mod spending_report;
 pub mod triage;

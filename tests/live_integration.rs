@@ -33,6 +33,7 @@
 
 use monarch_mcp::client::MonarchClient;
 use monarch_mcp::financial_overview::compute_overview;
+use monarch_mcp::net_worth_trend::compute_trend;
 use std::env;
 
 fn live_enabled() -> bool {
@@ -267,6 +268,78 @@ async fn get_recurring_returns_valid_structure_from_real_monarch() {
             "recurring item merchant name must not be empty"
         );
     }
+}
+
+/// Verify that GetSnapshotsByAccountType returns structurally valid rows from
+/// the real Monarch API: no GraphQL errors, finite balances, non-empty account
+/// type strings, and well-formed month strings (YYYY-MM format).
+///
+/// Does NOT assert specific balances or account types — those change over time.
+/// Asserts structural validity only (field presence and type correctness).
+#[tokio::test]
+async fn get_snapshots_by_account_type_returns_valid_structure_from_real_monarch() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    // Use a start date 3 months back to get a realistic multi-month series.
+    let (start, _) = prior_month();
+    // Trim to first-of-month (prior_month() already returns first-of-month).
+    let start_date = start;
+
+    let snapshots = client
+        .get_snapshots_by_account_type(&start_date)
+        .await
+        .expect("GetSnapshotsByAccountType must succeed against real Monarch");
+
+    eprintln!("snapshot rows returned: {}", snapshots.len());
+
+    for snap in &snapshots {
+        assert!(
+            !snap.account_type.is_empty(),
+            "account_type must not be empty"
+        );
+        assert!(
+            snap.balance.is_finite(),
+            "balance must be finite, got {} for type {:?} month {:?}",
+            snap.balance,
+            snap.account_type,
+            snap.month
+        );
+        // Month must be in YYYY-MM format (10 chars minimum: "2026-05").
+        assert!(
+            snap.month.len() >= 7 && snap.month.contains('-'),
+            "month must be YYYY-MM format, got {:?}",
+            snap.month
+        );
+    }
+
+    // Feed snapshots into compute_trend and verify structural validity.
+    let trend = compute_trend(&snapshots);
+    eprintln!("monthly_snapshots: {}", trend.monthly_snapshots.len());
+    eprintln!("latest_net_worth: {:.2}", trend.latest_net_worth);
+    eprintln!("net_worth_change: {:.2}", trend.net_worth_change);
+    eprintln!("total_assets: {:.2}", trend.total_assets);
+    eprintln!("total_liabilities: {:.2}", trend.total_liabilities);
+
+    assert!(
+        trend.latest_net_worth.is_finite(),
+        "latest_net_worth must be finite"
+    );
+    assert!(
+        trend.net_worth_change.is_finite(),
+        "net_worth_change must be finite"
+    );
+    assert!(
+        trend.total_assets >= 0.0,
+        "total_assets must be non-negative"
+    );
+    assert!(
+        trend.total_liabilities >= 0.0,
+        "total_liabilities must be non-negative"
+    );
 }
 
 /// Verify that GetJointPlanningData returns budget entries with valid
