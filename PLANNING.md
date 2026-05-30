@@ -116,6 +116,10 @@ Own spec→plan→build cycle when reached.
 
 ## Tier 3 backlog (later): `investment_review`, `scenario_model`, `debt_payoff_planner`, `annual_summary`.
 
+## Deferred bugs (Gate 3 adversarial findings, MEDIUM)
+- **B1 — emergency-fund reserve detection too narrow** (`src/progress_vs_goals.rs`): counts only `account_type.name == "savings"`; a money-market/HYSA/brokerage emergency fund reads as $0 → false "off". Broaden the asset set or classify by sign (as `financial_overview` does).
+- **B2 — no graceful degradation on partial/null Monarch responses** (`src/client.rs`): bare `f64` fields lack `#[serde(default)]`; a single `null` balance (unsynced account) fails the whole accounts parse. Add defaults / per-element skip per the spec's "degrade gracefully" goal.
+
 ## Immediate next action
 A1 harness is RED. After the Gate 1 remediation (auth-expired, boundary, empty-state,
 negative net worth, stronger capability-denial scenarios) lands and re-confirms RED, start
