@@ -220,6 +220,7 @@ mod tests {
             },
             tags: vec![],
             notes: String::new(),
+            needs_review: false,
         }
     }
 

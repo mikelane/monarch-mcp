@@ -183,32 +183,127 @@ impl MonarchTools {
 }
 
 // ---------------------------------------------------------------------------
-// Data fetching helper — isolated so the tool handler stays readable
+// Date-range helpers
+// ---------------------------------------------------------------------------
+
+/// Returns (start, end) for the current calendar month as ISO-8601 strings.
+fn current_month_range() -> (String, String) {
+    // Use time crate-free approach: chrono is not a dep, so compute from
+    // the system clock via std. We format YYYY-MM-01 for start and
+    // YYYY-MM-{last_day} for end. Since we don't have chrono, we use a
+    // simple approach: end = today and start = first of this month.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // seconds since epoch → rough calendar arithmetic
+    let secs_per_day = 86_400u64;
+    let days_since_epoch = now / secs_per_day;
+    // 2000-01-01 was day 10_957 since epoch (Unix epoch = 1970-01-01)
+    // Use a reference: 2024-01-01 = 19723 days since epoch
+    // Simpler: ask the OS via formatted date string if available, else hard-code today.
+    //
+    // We use a helper that formats dates without chrono.
+    let (year, month, _day) = days_to_ymd(days_since_epoch as i64);
+
+    let start = format!("{year:04}-{month:02}-01");
+    // For end, use the first of next month minus 1 day
+    let last_day = days_in_month(year, month);
+    let end = format!("{year:04}-{month:02}-{last_day:02}");
+    (start, end)
+}
+
+/// Returns (start, end) for the prior calendar month.
+fn prior_month_range() -> (String, String) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days_since_epoch = (now / 86_400) as i64;
+    let (mut year, mut month, _) = days_to_ymd(days_since_epoch);
+    if month == 1 {
+        year -= 1;
+        month = 12;
+    } else {
+        month -= 1;
+    }
+    let last_day = days_in_month(year, month);
+    let start = format!("{year:04}-{month:02}-01");
+    let end = format!("{year:04}-{month:02}-{last_day:02}");
+    (start, end)
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_ymd(days: i64) -> (i64, u32, u32) {
+    // Proleptic Gregorian algorithm from Wikipedia
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m as u32, d as u32)
+}
+
+fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 31,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Data fetching helpers — isolated so tool handlers stay readable
 // ---------------------------------------------------------------------------
 
 async fn fetch_and_compute(
     client: &MonarchClient,
 ) -> Result<crate::financial_overview::OverviewResult, MonarchError> {
-    let accounts = client.get_accounts().await?;
-    let cashflow = client.get_cashflow().await?;
-    let history = client.get_net_worth_history().await?;
+    let (cur_start, cur_end) = current_month_range();
+    let (pri_start, pri_end) = prior_month_range();
+
+    let (accounts, cashflow, history) = tokio::try_join!(
+        client.get_accounts(),
+        client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
+        client.get_net_worth_history(&pri_start, &pri_end),
+    )?;
     Ok(compute_overview(&accounts, &cashflow, &history))
 }
 
 async fn fetch_and_compute_spending(
     client: &MonarchClient,
 ) -> Result<crate::spending_report::SpendingReport, MonarchError> {
-    let transactions = client.get_transactions().await?;
-    let budgets = client.get_budgets().await?;
-    let cashflow = client.get_cashflow().await?;
+    let (cur_start, cur_end) = current_month_range();
+    let (pri_start, pri_end) = prior_month_range();
+
+    let (transactions, budgets, cashflow) = tokio::try_join!(
+        client.get_transactions(&cur_start, &cur_end, 500),
+        client.get_budgets(&cur_start, &cur_end),
+        client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
+    )?;
     Ok(compute_spending_report(&transactions, &budgets, &cashflow))
 }
 
 async fn fetch_and_compute_triage(
     client: &MonarchClient,
 ) -> Result<crate::triage::TriageResult, MonarchError> {
-    let all_transactions = client.get_transactions().await?;
-    let uncategorized = client.get_transactions_needing_review().await?;
+    let (cur_start, cur_end) = current_month_range();
+    let (all_transactions, uncategorized) = tokio::try_join!(
+        client.get_transactions(&cur_start, &cur_end, 500),
+        client.get_transactions_needing_review(),
+    )?;
     let suggestion_map = build_category_suggestion_map(&all_transactions);
     Ok(propose_changes(&uncategorized, &suggestion_map))
 }
@@ -218,8 +313,13 @@ async fn fetch_and_compute_progress(
 ) -> Result<crate::progress_vs_goals::GoalsProgress, MonarchError> {
     let goals = Goals::load_from_env()
         .map_err(|e| MonarchError::Internal(e.to_string()))?;
-    let accounts = client.get_accounts().await?;
-    let cashflow = client.get_cashflow().await?;
+    let (cur_start, cur_end) = current_month_range();
+    let (pri_start, pri_end) = prior_month_range();
+
+    let (accounts, cashflow) = tokio::try_join!(
+        client.get_accounts(),
+        client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
+    )?;
     Ok(compute_progress(&goals, &accounts, &cashflow))
 }
 
@@ -232,7 +332,8 @@ async fn apply_approved_changeset(
     let entries = parse_raw_changes(raw_changes);
 
     // Partition into allowed and forbidden entries — forbidden ones never reach the API.
-    let all_transactions = client.get_transactions().await?;
+    let (cur_start, cur_end) = current_month_range();
+    let all_transactions = client.get_transactions(&cur_start, &cur_end, 500).await?;
     let total_count = all_transactions.len();
     let result = partition_changeset(&entries, total_count);
 

@@ -1,5 +1,4 @@
 //! Monarch API client — auth, session persistence, and GraphQL transport.
-#![allow(dead_code)] // Public API consumed by A4–A7 tool implementations
 //!
 //! All knowledge of Monarch's HTTP API lives here. Nothing above this layer
 //! touches reqwest or knows about HTTP status codes.
@@ -8,8 +7,24 @@
 //! When `MONARCH_TOKEN` is set the client skips interactive login and uses
 //! the env-var value directly. The BDD harness relies on this.
 //!
+//! # Config isolation
+//! Session files are written to `{config_dir}/monarch-mcp/session.json`, where
+//! `config_dir` is resolved by [`config_dir`]. Tests set `MONARCH_CONFIG_DIR`
+//! (or `XDG_CONFIG_HOME`) to a temp directory so they never touch the real
+//! `~/.config/monarch-mcp/session.json`.
+//!
 //! # Session expiry
 //! HTTP 401 from any authenticated endpoint is mapped to `MonarchError::SessionExpired`.
+//!
+//! # Real GraphQL operations (validated against live Monarch, ADR 0002)
+//! - `GetAccounts`                — `accounts { id displayName currentBalance … }`
+//! - `GetTransactionsList`        — `allTransactions { totalCount results { … } }`
+//! - `Web_GetCashFlowPage`        — `summary: aggregates { summary { sumIncome sumExpense … } }`
+//! - `GetAggregateSnapshots`      — `aggregateSnapshots { date balance }`
+//! - `GetCategories`              — `categories { id name group { … } }`
+//! - `GetHouseholdTransactionTags`— `householdTransactionTags { id name color … }`
+//! - `GetJointPlanningData`       — `budgetData { monthlyAmountsByCategory { … } }`
+//! - `Common_UpdateTransactionMutation` — `updateTransaction(input: {id, …})`
 
 use crate::error::MonarchError;
 use reqwest::Client;
@@ -28,13 +43,19 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 // ---------------------------------------------------------------------------
-// Response types — shaped to match bdd/mock_monarch/server.py exactly
+// Internal domain types — consumed by compute/aggregation functions.
+//
+// These shapes are STABLE: compute_overview, compute_spending_report, etc. all
+// depend on them. The GraphQL parsing layer (further below) translates from
+// Monarch's real response shapes into these internal types.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct Account {
+    #[allow(dead_code)]
     pub id: String,
     #[serde(rename = "displayName")]
+    #[allow(dead_code)]
     pub display_name: String,
     #[serde(rename = "currentBalance")]
     pub current_balance: f64,
@@ -47,90 +68,212 @@ pub struct AccountType {
     pub name: String,
 }
 
+/// A transaction as consumed by spending_report.rs and triage.rs.
+///
+/// Populated from `GetTransactionsList → allTransactions.results[]`.
+/// Monarch's real response has `merchant.name` (not `merchantName`) and
+/// `tags` as objects with `{id, name, color, order}` (not bare strings).
 #[derive(Debug, Deserialize)]
 pub struct Transaction {
     pub id: String,
     pub amount: f64,
     pub date: String,
-    #[serde(rename = "merchantName")]
+    /// Populated from `merchant.name` in the Monarch response.
     pub merchant_name: String,
     pub category: Category,
+    /// Tag names only — the compute layer only needs the name strings.
+    #[allow(dead_code)]
     pub tags: Vec<String>,
+    #[allow(dead_code)]
     pub notes: String,
+    /// Whether this transaction is flagged for review (from `needsReview`).
+    #[allow(dead_code)]
+    pub needs_review: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Category {
     pub name: String,
 }
 
-#[derive(Debug, Deserialize)]
+/// A budget entry as consumed by spending_report.rs.
+///
+/// Populated from `GetJointPlanningData → budgetData.monthlyAmountsByCategory`.
+/// Monarch returns category by ID only; we enrich with category name by joining
+/// against the categories list fetched separately.
 pub struct Budget {
     pub category: Category,
+    /// `plannedCashFlowAmount` from the budget monthly amounts.
     pub amount: f64,
 }
 
-#[derive(Debug, Deserialize)]
+/// Cashflow summary as consumed by financial_overview.rs and spending_report.rs.
+///
+/// Populated from `Web_GetCashFlowPage → summary[0].summary`.
+/// `prior_month_spending` is derived by a second call with the prior-month
+/// date range — Monarch has no single-call "prior month" comparison field.
 pub struct Cashflow {
+    /// `sumIncome` from the aggregates summary.
     pub income: f64,
+    /// Absolute value of `sumExpense` (Monarch returns this as negative).
     pub spending: f64,
+    /// Prior month's `sumExpense` (absolute), fetched separately.
     pub prior_month_spending: f64,
 }
 
+/// Net-worth snapshot as consumed by financial_overview.rs.
+///
+/// Populated from `GetAggregateSnapshots → aggregateSnapshots`.
+/// `prior_month_net_worth` is the `balance` of the last snapshot in the
+/// prior-month date window.
+pub struct NetWorthHistory {
+    pub prior_month_net_worth: f64,
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Tag {
     pub id: String,
     pub name: String,
 }
 
+// ---------------------------------------------------------------------------
+// Raw GraphQL response deserialization helpers (Monarch's real shapes)
+// ---------------------------------------------------------------------------
+
+/// One item in `aggregateSnapshots[]`.
 #[derive(Debug, Deserialize)]
-pub struct NetWorthHistory {
-    #[serde(rename = "priorMonthNetWorth")]
-    pub prior_month_net_worth: f64,
+struct AggregateSnapshot {
+    #[allow(dead_code)]
+    pub date: String,
+    pub balance: f64,
+}
+
+/// `summary: aggregates(…, fillEmptyValues: true)[0].summary`
+#[derive(Debug, Deserialize)]
+struct CashflowSummaryRaw {
+    #[serde(rename = "sumIncome")]
+    pub sum_income: f64,
+    #[serde(rename = "sumExpense")]
+    pub sum_expense: f64,
+}
+
+/// One item from `allTransactions.results[]`.
+#[derive(Debug, Deserialize)]
+struct TransactionRaw {
+    pub id: String,
+    pub amount: f64,
+    pub date: String,
+    pub merchant: Option<MerchantRaw>,
+    pub category: Option<CategoryRaw>,
+    pub tags: Vec<TagRaw>,
+    pub notes: Option<String>,
+    #[serde(rename = "needsReview")]
+    pub needs_review: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct MerchantRaw {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CategoryRaw {
+    #[allow(dead_code)]
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TagRaw {
+    #[allow(dead_code)]
+    pub id: String,
+    pub name: String,
+}
+
+/// One item from `budgetData.monthlyAmountsByCategory[]`.
+#[derive(Debug, Deserialize)]
+struct BudgetByCategoryRaw {
+    pub category: BudgetCategoryRaw,
+    #[serde(rename = "monthlyAmounts")]
+    pub monthly_amounts: Vec<MonthlyAmountRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BudgetCategoryRaw {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MonthlyAmountRaw {
+    #[serde(rename = "plannedCashFlowAmount")]
+    pub planned_cash_flow_amount: f64,
 }
 
 // ---------------------------------------------------------------------------
 // Session persistence
 // ---------------------------------------------------------------------------
 
+/// Resolve the config directory for session storage.
+///
+/// Priority: `MONARCH_CONFIG_DIR` env → `XDG_CONFIG_HOME` env → `~/.config`.
+/// Tests set `MONARCH_CONFIG_DIR` to a temp path so they never touch
+/// `~/.config/monarch-mcp/session.json`.
+fn config_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("MONARCH_CONFIG_DIR") {
+        if !d.is_empty() {
+            return PathBuf::from(d);
+        }
+    }
+    if let Ok(d) = std::env::var("XDG_CONFIG_HOME") {
+        if !d.is_empty() {
+            return PathBuf::from(d);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config")
+}
+
+fn session_path() -> PathBuf {
+    config_dir().join("monarch-mcp").join("session.json")
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionFile {
     token: String,
 }
 
-fn session_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".config")
-        .join("monarch-mcp")
-        .join("session.json")
-}
-
-fn persist_token(token: &str) -> Result<(), MonarchError> {
-    let path = session_path();
+fn persist_token_to(path: &PathBuf, token: &str) -> Result<(), MonarchError> {
     std::fs::create_dir_all(path.parent().unwrap())
         .map_err(|e| MonarchError::Internal(format!("create config dir: {e}")))?;
     let contents = serde_json::to_string(&SessionFile {
         token: token.to_string(),
     })
     .unwrap();
-    std::fs::write(&path, contents)
+    std::fs::write(path, contents)
         .map_err(|e| MonarchError::Internal(format!("write session: {e}")))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| MonarchError::Internal(format!("chmod session: {e}")))?;
     }
     Ok(())
 }
 
-fn load_persisted_token() -> Option<String> {
-    let path = session_path();
+fn persist_token(token: &str) -> Result<(), MonarchError> {
+    persist_token_to(&session_path(), token)
+}
+
+fn load_token_from(path: &PathBuf) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     serde_json::from_str::<SessionFile>(&contents)
         .ok()
         .map(|s| s.token)
+}
+
+fn load_persisted_token() -> Option<String> {
+    load_token_from(&session_path())
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +326,7 @@ impl MonarchClient {
     }
 
     /// Return the current session token, or `None` if not authenticated.
+    #[allow(dead_code)]
     pub fn token(&self) -> Option<&str> {
         self.token.as_deref()
     }
@@ -315,14 +459,24 @@ impl MonarchClient {
     }
 
     // -----------------------------------------------------------------------
-    // Typed read operations — operationNames must match mock_monarch/server.py
+    // Typed read operations — real Monarch GraphQL (see ADR 0002)
     // -----------------------------------------------------------------------
 
     pub async fn get_accounts(&self) -> Result<Vec<Account>, MonarchError> {
         let data = self
             .graphql(
                 "GetAccounts",
-                "query GetAccounts { accounts { id displayName currentBalance type { name } } }",
+                "query GetAccounts {
+                  accounts {
+                    id
+                    displayName
+                    currentBalance
+                    isHidden
+                    type { name display __typename }
+                    subtype { name display __typename }
+                    __typename
+                  }
+                }",
                 json!({}),
             )
             .await?;
@@ -331,127 +485,415 @@ impl MonarchClient {
         Ok(accounts)
     }
 
-    pub async fn get_transactions(&self) -> Result<Vec<Transaction>, MonarchError> {
+    /// Fetch transactions for a date range.
+    ///
+    /// `start_date` and `end_date` are ISO-8601 strings (`YYYY-MM-DD`).
+    /// The real Monarch field is `allTransactions.results[]`, not a top-level
+    /// `transactions` field (see ADR 0002).
+    pub async fn get_transactions(
+        &self,
+        start_date: &str,
+        end_date: &str,
+        limit: u32,
+    ) -> Result<Vec<Transaction>, MonarchError> {
         let data = self
             .graphql(
-                "GetTransactions",
-                "query GetTransactions { transactions { id amount date merchantName category { name } tags notes } }",
-                json!({}),
+                "GetTransactionsList",
+                "query GetTransactionsList($offset: Int, $limit: Int, $filters: TransactionFilterInput, $orderBy: TransactionOrdering) {
+                  allTransactions(filters: $filters) {
+                    totalCount
+                    results(offset: $offset, limit: $limit, orderBy: $orderBy) {
+                      id
+                      amount
+                      date
+                      needsReview
+                      notes
+                      category { id name __typename }
+                      merchant { name id __typename }
+                      account { id displayName __typename }
+                      tags { id name color order __typename }
+                      __typename
+                    }
+                    __typename
+                  }
+                }",
+                json!({
+                    "offset": 0,
+                    "limit": limit,
+                    "orderBy": "date",
+                    "filters": {
+                        "search": "",
+                        "categories": [],
+                        "accounts": [],
+                        "tags": [],
+                        "startDate": start_date,
+                        "endDate": end_date,
+                    }
+                }),
             )
             .await?;
-        let txns: Vec<Transaction> = serde_json::from_value(data["transactions"].clone())
+
+        let results = &data["allTransactions"]["results"];
+        let raw: Vec<TransactionRaw> = serde_json::from_value(results.clone())
             .map_err(|e| MonarchError::Internal(format!("parse transactions: {e}")))?;
-        Ok(txns)
+
+        Ok(raw.into_iter().map(transaction_from_raw).collect())
     }
 
+    /// Fetch transactions flagged as needing review.
+    ///
+    /// Uses the same `GetTransactionsList` operation with `needsReview: true`
+    /// in the filter — Monarch has no separate root field for this (ADR 0002).
     pub async fn get_transactions_needing_review(&self) -> Result<Vec<Transaction>, MonarchError> {
         let data = self
             .graphql(
-                "GetTransactionsNeedingReview",
-                "query GetTransactionsNeedingReview { transactionsNeedingReview { id amount date merchantName category { name } tags notes } }",
-                json!({}),
+                "GetTransactionsList",
+                "query GetTransactionsList($offset: Int, $limit: Int, $filters: TransactionFilterInput, $orderBy: TransactionOrdering) {
+                  allTransactions(filters: $filters) {
+                    totalCount
+                    results(offset: $offset, limit: $limit, orderBy: $orderBy) {
+                      id
+                      amount
+                      date
+                      needsReview
+                      notes
+                      category { id name __typename }
+                      merchant { name id __typename }
+                      account { id displayName __typename }
+                      tags { id name color order __typename }
+                      __typename
+                    }
+                    __typename
+                  }
+                }",
+                json!({
+                    "offset": 0,
+                    "limit": 100,
+                    "orderBy": "date",
+                    "filters": {
+                        "search": "",
+                        "categories": [],
+                        "accounts": [],
+                        "tags": [],
+                        "needsReview": true,
+                    }
+                }),
             )
             .await?;
-        let txns: Vec<Transaction> =
-            serde_json::from_value(data["transactionsNeedingReview"].clone())
-                .map_err(|e| MonarchError::Internal(format!("parse review txns: {e}")))?;
-        Ok(txns)
+
+        let results = &data["allTransactions"]["results"];
+        let raw: Vec<TransactionRaw> = serde_json::from_value(results.clone())
+            .map_err(|e| MonarchError::Internal(format!("parse review txns: {e}")))?;
+
+        Ok(raw.into_iter().map(transaction_from_raw).collect())
     }
 
-    pub async fn get_budgets(&self) -> Result<Vec<Budget>, MonarchError> {
-        let data = self
-            .graphql(
-                "GetBudgets",
-                "query GetBudgets { budgets { category { name } amount } }",
-                json!({}),
-            )
-            .await?;
-        let budgets: Vec<Budget> = serde_json::from_value(data["budgets"].clone())
-            .map_err(|e| MonarchError::Internal(format!("parse budgets: {e}")))?;
+    /// Fetch category budgets for a given month.
+    ///
+    /// Returns budgets enriched with category names by joining against the
+    /// categories list. Uses `GetJointPlanningData` (real operation) not the
+    /// invented `GetBudgets { budgets { category { name } amount } }` (ADR 0002).
+    pub async fn get_budgets(&self, start_date: &str, end_date: &str) -> Result<Vec<Budget>, MonarchError> {
+        // Fetch budgets (by category id) and categories (id→name) in parallel.
+        let (budget_data, categories) = tokio::try_join!(
+            self.graphql(
+                "GetJointPlanningData",
+                "query GetJointPlanningData($startDate: Date!, $endDate: Date!) {
+                  budgetData(startMonth: $startDate, endMonth: $endDate) {
+                    monthlyAmountsByCategory {
+                      category { id __typename }
+                      monthlyAmounts {
+                        month
+                        plannedCashFlowAmount
+                        actualAmount
+                        remainingAmount
+                        __typename
+                      }
+                      __typename
+                    }
+                    __typename
+                  }
+                }",
+                json!({"startDate": start_date, "endDate": end_date}),
+            ),
+            self.get_categories(),
+        )?;
+
+        // Build id→name lookup.
+        let name_by_id: std::collections::HashMap<String, String> = categories
+            .into_iter()
+            .map(|c| (c.id, c.name))
+            .collect();
+
+        let monthly_by_cat: Vec<BudgetByCategoryRaw> = serde_json::from_value(
+            budget_data["budgetData"]["monthlyAmountsByCategory"].clone(),
+        )
+        .map_err(|e| MonarchError::Internal(format!("parse budgets: {e}")))?;
+
+        // Take the first month's plannedCashFlowAmount for each category.
+        let budgets = monthly_by_cat
+            .into_iter()
+            .filter_map(|entry| {
+                let amount = entry
+                    .monthly_amounts
+                    .first()
+                    .map(|m| m.planned_cash_flow_amount)
+                    .unwrap_or(0.0);
+                // Skip categories with no budget set.
+                if amount == 0.0 {
+                    return None;
+                }
+                let name = name_by_id
+                    .get(&entry.category.id)
+                    .cloned()
+                    .unwrap_or_else(|| entry.category.id.clone());
+                Some(Budget {
+                    category: Category { name },
+                    amount,
+                })
+            })
+            .collect();
+
         Ok(budgets)
     }
 
-    pub async fn get_cashflow(&self) -> Result<Cashflow, MonarchError> {
-        let data = self
-            .graphql(
-                "GetCashflow",
-                "query GetCashflow { cashflow { income spending prior_month_spending } }",
-                json!({}),
-            )
-            .await?;
-        let cashflow: Cashflow = serde_json::from_value(data["cashflow"].clone())
-            .map_err(|e| MonarchError::Internal(format!("parse cashflow: {e}")))?;
-        Ok(cashflow)
+    /// Fetch current-month cashflow summary.
+    ///
+    /// Income and spending come from `Web_GetCashFlowPage → summary[0].summary`.
+    /// There is no `cashflow` root field in Monarch's real schema (ADR 0002).
+    /// `sumExpense` is already negative — we store its absolute value as `spending`.
+    ///
+    /// Prior-month spending requires a second call with the prior-month date range.
+    pub async fn get_cashflow(
+        &self,
+        start_date: &str,
+        end_date: &str,
+        prior_start: &str,
+        prior_end: &str,
+    ) -> Result<Cashflow, MonarchError> {
+        let filters = json!({
+            "startDate": start_date,
+            "endDate": end_date,
+            "search": "",
+            "categories": [],
+            "accounts": [],
+            "tags": [],
+        });
+        let prior_filters = json!({
+            "startDate": prior_start,
+            "endDate": prior_end,
+            "search": "",
+            "categories": [],
+            "accounts": [],
+            "tags": [],
+        });
+
+        let query = "query Web_GetCashFlowPage($filters: TransactionFilterInput) {
+          summary: aggregates(filters: $filters, fillEmptyValues: true) {
+            summary {
+              sumIncome
+              sumExpense
+              savings
+              savingsRate
+              __typename
+            }
+            __typename
+          }
+        }";
+
+        let (current_data, prior_data) = tokio::try_join!(
+            self.graphql("Web_GetCashFlowPage", query, json!({"filters": filters})),
+            self.graphql("Web_GetCashFlowPage", query, json!({"filters": prior_filters})),
+        )?;
+
+        let current_raw: CashflowSummaryRaw = extract_cashflow_summary(&current_data)?;
+        let prior_raw: CashflowSummaryRaw = extract_cashflow_summary(&prior_data)?;
+
+        Ok(Cashflow {
+            income: current_raw.sum_income,
+            // sumExpense is negative in Monarch — store as positive spending
+            spending: current_raw.sum_expense.abs(),
+            prior_month_spending: prior_raw.sum_expense.abs(),
+        })
     }
 
-    pub async fn get_categories(&self) -> Result<Vec<Category>, MonarchError> {
+    pub async fn get_categories(&self) -> Result<Vec<CategoryWithId>, MonarchError> {
         let data = self
             .graphql(
                 "GetCategories",
-                "query GetCategories { categories { id name } }",
+                "query GetCategories {
+                  categories {
+                    id
+                    order
+                    name
+                    systemCategory
+                    isSystemCategory
+                    isDisabled
+                    group { id name type __typename }
+                    __typename
+                  }
+                }",
                 json!({}),
             )
             .await?;
-        let categories: Vec<Category> = serde_json::from_value(data["categories"].clone())
+
+        let categories: Vec<CategoryWithId> = serde_json::from_value(data["categories"].clone())
             .map_err(|e| MonarchError::Internal(format!("parse categories: {e}")))?;
         Ok(categories)
     }
 
+    /// Fetch tags from `householdTransactionTags` (not the invented `tags` root field).
+    #[allow(dead_code)]
     pub async fn get_tags(&self) -> Result<Vec<Tag>, MonarchError> {
         let data = self
             .graphql(
-                "GetTags",
-                "query GetTags { tags { id name } }",
+                "GetHouseholdTransactionTags",
+                "query GetHouseholdTransactionTags($search: String, $limit: Int, $bulkParams: BulkTransactionDataParams) {
+                  householdTransactionTags(search: $search, limit: $limit, bulkParams: $bulkParams) {
+                    id
+                    name
+                    color
+                    order
+                    transactionCount
+                    __typename
+                  }
+                }",
                 json!({}),
             )
             .await?;
-        let tags: Vec<Tag> = serde_json::from_value(data["tags"].clone())
+
+        let tags: Vec<Tag> = serde_json::from_value(data["householdTransactionTags"].clone())
             .map_err(|e| MonarchError::Internal(format!("parse tags: {e}")))?;
         Ok(tags)
     }
 
-    pub async fn get_net_worth_history(&self) -> Result<NetWorthHistory, MonarchError> {
+    /// Fetch daily net-worth snapshots and return the last balance in the window.
+    ///
+    /// Uses `GetAggregateSnapshots` — there is no `netWorthHistory` root field
+    /// in Monarch's real schema (ADR 0002).
+    pub async fn get_net_worth_history(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<NetWorthHistory, MonarchError> {
         let data = self
             .graphql(
-                "GetNetWorthHistory",
-                "query GetNetWorthHistory { netWorthHistory { priorMonthNetWorth } }",
-                json!({}),
+                "GetAggregateSnapshots",
+                "query GetAggregateSnapshots($filters: AggregateSnapshotFilters) {
+                  aggregateSnapshots(filters: $filters) {
+                    date
+                    balance
+                    __typename
+                  }
+                }",
+                json!({"filters": {"startDate": start_date, "endDate": end_date}}),
             )
             .await?;
-        let history: NetWorthHistory =
-            serde_json::from_value(data["netWorthHistory"].clone())
-                .map_err(|e| MonarchError::Internal(format!("parse net worth history: {e}")))?;
-        Ok(history)
+
+        let snapshots: Vec<AggregateSnapshot> =
+            serde_json::from_value(data["aggregateSnapshots"].clone())
+                .map_err(|e| MonarchError::Internal(format!("parse net worth snapshots: {e}")))?;
+
+        // The prior-month net worth is the balance of the last snapshot in the window.
+        let prior_month_net_worth = snapshots.last().map(|s| s.balance).unwrap_or(0.0);
+
+        Ok(NetWorthHistory { prior_month_net_worth })
     }
 
     /// Apply a category/tags/notes change to a single transaction.
-    /// Amount changes are not permitted — the mock rejects them.
+    ///
+    /// Uses `Common_UpdateTransactionMutation` with the `input: {id, …}` shape
+    /// validated against real Monarch (ADR 0002). Amount changes are rejected
+    /// at the `triage.rs` parse layer before this is called.
     pub async fn update_transaction(
         &self,
         id: &str,
-        category: Option<&str>,
-        tags: Option<Vec<String>>,
+        category_id: Option<&str>,
+        tag_ids: Option<Vec<String>>,
         notes: Option<&str>,
     ) -> Result<(), MonarchError> {
-        let mut vars = serde_json::Map::new();
-        vars.insert("id".to_string(), json!(id));
-        if let Some(c) = category {
-            vars.insert("category".to_string(), json!(c));
+        let mut input = serde_json::Map::new();
+        input.insert("id".to_string(), json!(id));
+        if let Some(cid) = category_id {
+            input.insert("categoryId".to_string(), json!(cid));
         }
-        if let Some(t) = tags {
-            vars.insert("tags".to_string(), json!(t));
+        if let Some(tids) = tag_ids {
+            input.insert("tagIds".to_string(), json!(tids));
         }
         if let Some(n) = notes {
-            vars.insert("notes".to_string(), json!(n));
+            input.insert("notes".to_string(), json!(n));
         }
+
         self.graphql(
-            "UpdateTransaction",
-            "mutation UpdateTransaction($id: ID!, $category: String, $tags: [String], $notes: String) { updateTransaction(id: $id, category: $category, tags: $tags, notes: $notes) { id category { name } } }",
-            Value::Object(vars),
+            "Common_UpdateTransactionMutation",
+            "mutation Common_UpdateTransactionMutation($input: UpdateTransactionMutationInput!) {
+              updateTransaction(input: $input) {
+                transaction {
+                  id
+                  notes
+                  category { id name __typename }
+                  __typename
+                }
+                errors { message __typename }
+                __typename
+              }
+            }",
+            json!({"input": Value::Object(input)}),
         )
         .await?;
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helper types — public so financial_overview.rs / spending_report.rs tests
+// can construct Category with an id field when needed.
+// ---------------------------------------------------------------------------
+
+/// A category as returned by `GetCategories` — includes the `id` field that
+/// the budget join logic needs. The simpler `Category` (name-only) is what
+/// the compute layer uses after enrichment.
+#[derive(Debug, Deserialize)]
+pub struct CategoryWithId {
+    pub id: String,
+    pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// Private parsing helpers
+// ---------------------------------------------------------------------------
+
+fn transaction_from_raw(raw: TransactionRaw) -> Transaction {
+    Transaction {
+        id: raw.id,
+        amount: raw.amount,
+        date: raw.date,
+        merchant_name: raw.merchant.map(|m| m.name).unwrap_or_default(),
+        category: Category {
+            name: raw
+                .category
+                .map(|c| c.name)
+                .unwrap_or_else(|| "Uncategorized".to_string()),
+        },
+        tags: raw.tags.into_iter().map(|t| t.name).collect(),
+        notes: raw.notes.unwrap_or_default(),
+        needs_review: raw.needs_review,
+    }
+}
+
+fn extract_cashflow_summary(data: &Value) -> Result<CashflowSummaryRaw, MonarchError> {
+    // `summary` is an alias for `aggregates(…, fillEmptyValues: true)` — it
+    // returns an array; we want the first element's `.summary` sub-object.
+    let summaries = data["summary"]
+        .as_array()
+        .ok_or_else(|| MonarchError::Internal("cashflow summary missing 'summary' array".to_string()))?;
+
+    let first = summaries
+        .first()
+        .ok_or_else(|| MonarchError::Internal("cashflow summary array is empty".to_string()))?;
+
+    serde_json::from_value(first["summary"].clone())
+        .map_err(|e| MonarchError::Internal(format!("parse cashflow summary: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +955,14 @@ mod tests {
             .await;
 
         let mut client = MonarchClient::new(Some(server.uri()));
+        // Patch the client's login to write the session to a temp path so we
+        // don't touch ~/.config. We do this by setting MONARCH_CONFIG_DIR only
+        // briefly, accepting the minor race risk for this auth-logic test.
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("MONARCH_CONFIG_DIR", tmp.path()) };
         let token = client.login_password("user@example.com", "secret").await.unwrap();
+        unsafe { std::env::remove_var("MONARCH_CONFIG_DIR") };
+        drop(tmp);
         assert_eq!(token, "tok-abc");
         assert_eq!(client.token(), Some("tok-abc"));
     }
@@ -557,12 +1006,23 @@ mod tests {
             .mount(&server)
             .await;
 
+        // Isolate session writes to a temp dir; env vars are global so we point
+        // the client directly rather than using set_var (which races with other tests).
+        let tmp = tempfile::tempdir().unwrap();
         let mut client = MonarchClient::new(Some(server.uri()));
-        let err = client.login_password("u", "p").await.unwrap_err();
-        assert!(matches!(err, LoginError::MfaRequired));
-
-        let token = client.login_totp("u", "p", "123456").await.unwrap();
-        assert_eq!(token, "tok-mfa");
+        // Override the session path by setting MONARCH_CONFIG_DIR only for the
+        // duration of the persist call — we do this by temporarily setting the var
+        // inside a dedicated scope and restoring immediately.
+        {
+            unsafe { std::env::set_var("MONARCH_CONFIG_DIR", tmp.path()) };
+            let err = client.login_password("u", "p").await.unwrap_err();
+            assert!(matches!(err, LoginError::MfaRequired));
+            let token = client.login_totp("u", "p", "123456").await.unwrap();
+            unsafe { std::env::remove_var("MONARCH_CONFIG_DIR") };
+            assert_eq!(token, "tok-mfa");
+        }
+        // tmp is dropped here, cleaning up the isolated session file
+        drop(tmp);
     }
 
     // -----------------------------------------------------------------------
@@ -603,19 +1063,35 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // GraphQL: GetAccounts response shape matches mock
+    // GetAccounts: real Monarch response shape
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn get_accounts_parses_mock_response_shape() {
+    async fn get_accounts_parses_real_response_shape() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "data": {
                     "accounts": [
-                        {"id": "1", "displayName": "Checking", "currentBalance": 1000.0, "type": {"name": "checking"}},
-                        {"id": "2", "displayName": "Credit Card", "currentBalance": -500.0, "type": {"name": "credit"}},
+                        {
+                            "id": "acct-1",
+                            "displayName": "Checking",
+                            "currentBalance": 2500.00,
+                            "isHidden": false,
+                            "type": {"name": "depository", "display": "Depository", "__typename": "AccountType"},
+                            "subtype": {"name": "checking", "display": "Checking", "__typename": "AccountSubtype"},
+                            "__typename": "Account"
+                        },
+                        {
+                            "id": "acct-2",
+                            "displayName": "Credit Card",
+                            "currentBalance": -800.00,
+                            "isHidden": false,
+                            "type": {"name": "credit", "display": "Credit Card", "__typename": "AccountType"},
+                            "subtype": {"name": "credit_card", "display": "Credit Card", "__typename": "AccountSubtype"},
+                            "__typename": "Account"
+                        }
                     ]
                 }
             })))
@@ -626,12 +1102,13 @@ mod tests {
         let accounts = client.get_accounts().await.unwrap();
         assert_eq!(accounts.len(), 2);
         assert_eq!(accounts[0].display_name, "Checking");
-        assert_eq!(accounts[0].current_balance, 1000.0);
+        assert_eq!(accounts[0].current_balance, 2500.00);
+        assert_eq!(accounts[1].current_balance, -800.00);
         assert_eq!(accounts[1].account_type.name, "credit");
     }
 
     // -----------------------------------------------------------------------
-    // TRIANGULATE: GetAccounts with empty list
+    // GetAccounts: empty list
     // -----------------------------------------------------------------------
 
     #[tokio::test]
@@ -651,27 +1128,79 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // GraphQL: GetTransactionsNeedingReview response shape
+    // GetTransactionsList: real allTransactions.results[] shape
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn get_transactions_needing_review_parses_mock_shape() {
+    async fn get_transactions_parses_real_all_transactions_shape() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "data": {
-                    "transactionsNeedingReview": [
-                        {
-                            "id": "t1",
-                            "amount": 42.50,
-                            "date": "2026-05-15",
-                            "merchantName": "ACME",
-                            "category": {"name": "Uncategorized"},
-                            "tags": [],
-                            "notes": ""
-                        }
-                    ]
+                    "allTransactions": {
+                        "totalCount": 1,
+                        "results": [
+                            {
+                                "id": "txn-1",
+                                "amount": -45.50,
+                                "date": "2026-05-15",
+                                "needsReview": false,
+                                "notes": "lunch",
+                                "category": {"id": "cat-1", "name": "Dining", "__typename": "Category"},
+                                "merchant": {"name": "ACME Cafe", "id": "m-1", "__typename": "Merchant"},
+                                "account": {"id": "acct-1", "displayName": "Checking", "__typename": "Account"},
+                                "tags": [{"id": "tag-1", "name": "business", "color": "#fff", "order": 1, "__typename": "TransactionTag"}],
+                                "__typename": "Transaction"
+                            }
+                        ],
+                        "__typename": "TransactionList"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let txns = client.get_transactions("2026-05-01", "2026-05-31", 100).await.unwrap();
+        assert_eq!(txns.len(), 1);
+        assert_eq!(txns[0].merchant_name, "ACME Cafe");
+        assert_eq!(txns[0].amount, -45.50);
+        assert_eq!(txns[0].category.name, "Dining");
+        assert_eq!(txns[0].tags, vec!["business"]);
+        assert_eq!(txns[0].notes, "lunch");
+        assert!(!txns[0].needs_review);
+    }
+
+    // -----------------------------------------------------------------------
+    // get_transactions_needing_review: filters on needsReview=true
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_transactions_needing_review_uses_needsreview_filter() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "allTransactions": {
+                        "totalCount": 1,
+                        "results": [
+                            {
+                                "id": "txn-review",
+                                "amount": -25.00,
+                                "date": "2026-05-20",
+                                "needsReview": true,
+                                "notes": "",
+                                "category": {"id": "cat-0", "name": "Uncategorized", "__typename": "Category"},
+                                "merchant": {"name": "Unknown Store", "id": "m-2", "__typename": "Merchant"},
+                                "account": {"id": "acct-1", "displayName": "Checking", "__typename": "Account"},
+                                "tags": [],
+                                "__typename": "Transaction"
+                            }
+                        ],
+                        "__typename": "TransactionList"
+                    }
                 }
             })))
             .mount(&server)
@@ -680,40 +1209,106 @@ mod tests {
         let client = client_for(&server.uri());
         let txns = client.get_transactions_needing_review().await.unwrap();
         assert_eq!(txns.len(), 1);
-        assert_eq!(txns[0].merchant_name, "ACME");
-        assert_eq!(txns[0].amount, 42.50);
+        assert!(txns[0].needs_review);
+        assert_eq!(txns[0].merchant_name, "Unknown Store");
     }
 
     // -----------------------------------------------------------------------
-    // GraphQL: GetCashflow response shape
+    // Web_GetCashFlowPage: real summary shape
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn get_cashflow_parses_mock_response_shape() {
+    async fn get_cashflow_parses_real_aggregate_summary_shape() {
         let server = MockServer::start().await;
+        // Both current and prior month calls get the same mock response
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "data": {
-                    "cashflow": {
-                        "income": 8000.0,
-                        "spending": 6500.0,
-                        "prior_month_spending": 6000.0
-                    }
+                    "summary": [
+                        {
+                            "summary": {
+                                "sumIncome": 8000.00,
+                                "sumExpense": -6500.00,
+                                "savings": 1500.00,
+                                "savingsRate": 0.1875,
+                                "__typename": "AggregateSummary"
+                            },
+                            "__typename": "Aggregate"
+                        }
+                    ]
                 }
             })))
             .mount(&server)
             .await;
 
         let client = client_for(&server.uri());
-        let cf = client.get_cashflow().await.unwrap();
-        assert_eq!(cf.income, 8000.0);
-        assert_eq!(cf.spending, 6500.0);
-        assert_eq!(cf.prior_month_spending, 6000.0);
+        let cf = client
+            .get_cashflow("2026-05-01", "2026-05-31", "2026-04-01", "2026-04-30")
+            .await
+            .unwrap();
+        assert_eq!(cf.income, 8000.00);
+        // sumExpense is -6500 in Monarch; we store absolute value
+        assert_eq!(cf.spending, 6500.00);
+        // prior month same mock → prior_month_spending also 6500
+        assert_eq!(cf.prior_month_spending, 6500.00);
     }
 
     // -----------------------------------------------------------------------
-    // TRIANGULATE: GraphQL errors array maps to GraphQL error variant
+    // GetAggregateSnapshots: last snapshot becomes prior_month_net_worth
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_net_worth_history_uses_last_snapshot_balance() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "aggregateSnapshots": [
+                        {"date": "2026-04-01", "balance": 65000.00, "__typename": "AggregateSnapshot"},
+                        {"date": "2026-04-15", "balance": 66000.00, "__typename": "AggregateSnapshot"},
+                        {"date": "2026-04-30", "balance": 68500.00, "__typename": "AggregateSnapshot"},
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let h = client.get_net_worth_history("2026-04-01", "2026-04-30").await.unwrap();
+        assert_eq!(h.prior_month_net_worth, 68500.00);
+    }
+
+    // -----------------------------------------------------------------------
+    // GetHouseholdTransactionTags: real field name
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_tags_parses_household_transaction_tags_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "householdTransactionTags": [
+                        {"id": "t1", "name": "business", "color": "#19D2A5", "order": 1, "transactionCount": 12, "__typename": "TransactionTag"},
+                        {"id": "t2", "name": "personal", "color": "#FF5733", "order": 2, "transactionCount": 5, "__typename": "TransactionTag"},
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let tags = client.get_tags().await.unwrap();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "business");
+        assert_eq!(tags[1].name, "personal");
+    }
+
+    // -----------------------------------------------------------------------
+    // GraphQL: errors array maps to GraphQL error variant
     // -----------------------------------------------------------------------
 
     #[tokio::test]
@@ -736,26 +1331,23 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // GetNetWorthHistory response shape
+    // Session isolation: persist_token_to / load_token_from work with an
+    // arbitrary path — no env var needed, no parallel-test races.
     // -----------------------------------------------------------------------
 
-    #[tokio::test]
-    async fn get_net_worth_history_parses_mock_shape() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/graphql"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": {
-                    "netWorthHistory": {
-                        "priorMonthNetWorth": 68000.0
-                    }
-                }
-            })))
-            .mount(&server)
-            .await;
+    #[test]
+    fn persist_and_load_token_roundtrip_in_isolated_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_file = tmp.path().join("monarch-mcp").join("session.json");
 
-        let client = client_for(&server.uri());
-        let h = client.get_net_worth_history().await.unwrap();
-        assert_eq!(h.prior_month_net_worth, 68000.0);
+        persist_token_to(&session_file, "isolated-tok-roundtrip")
+            .expect("persist should succeed");
+
+        assert!(session_file.exists(), "session.json must exist after persist");
+
+        let loaded = load_token_from(&session_file)
+            .expect("should load the token we just wrote");
+
+        assert_eq!(loaded, "isolated-tok-roundtrip");
     }
 }
