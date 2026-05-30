@@ -1,0 +1,59 @@
+# release-plz workflow
+# https://release-plz.dev/docs/github/quickstart
+#
+# What this does:
+#   On every push to main, release-plz checks whether any crate versions need
+#   bumping (based on Conventional Commits since the last release). If so, it
+#   opens (or updates) a "Release PR" that contains:
+#     - a Cargo.toml version bump
+#     - an updated CHANGELOG.md entry
+#
+#   When that Release PR is merged to main, release-plz:
+#     - publishes the crate to crates.io
+#     - pushes a git tag (e.g. v0.2.0)
+#
+#   The git tag push triggers cargo-dist's release.yml, which:
+#     - builds cross-platform binaries (shell + PowerShell installers)
+#     - creates the GitHub Release with those artifacts
+#
+# Required secrets (set in repo Settings → Secrets → Actions):
+#   CARGO_REGISTRY_TOKEN  — crates.io API token (needed to publish)
+#   RELEASE_PLZ_TOKEN     — GitHub PAT with repo + write:packages scope
+#                           (GITHUB_TOKEN-opened PRs do NOT trigger CI — use a PAT)
+
+name: Release-plz
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-plz:
+    name: Release-plz
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use the PAT so that the Release PR triggers CI.
+          # A PR opened with GITHUB_TOKEN is treated as a bot PR and does NOT
+          # trigger workflow runs on pull_request events — a PAT avoids this.
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
