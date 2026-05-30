@@ -105,7 +105,7 @@ fn build_category_reports(
                 Some(&budget) => CategoryReport {
                     spent,
                     budget: Some(budget),
-                    percent_of_budget: Some(percent_of_budget(spent, budget)),
+                    percent_of_budget: percent_of_budget(spent, budget),
                 },
                 None => CategoryReport {
                     spent,
@@ -119,8 +119,14 @@ fn build_category_reports(
 }
 
 /// Round (spent / budget * 100) to the nearest whole percent.
-fn percent_of_budget(spent: f64, budget: f64) -> i64 {
-    ((spent / budget) * 100.0).round() as i64
+///
+/// Returns `None` when `budget` is zero to avoid a divide-by-zero producing
+/// `inf` (which casts to `i64::MAX`) or `NaN` (which casts to `0`).
+fn percent_of_budget(spent: f64, budget: f64) -> Option<i64> {
+    if budget == 0.0 {
+        return None;
+    }
+    Some(((spent / budget) * 100.0).round() as i64)
 }
 
 /// A category is over budget only when spending strictly exceeds its budget.
@@ -282,9 +288,9 @@ mod tests {
     #[test]
     fn percent_of_budget_rounds_to_nearest_whole() {
         // 850/600 = 1.4166… → 142%
-        assert_eq!(percent_of_budget(850.0, 600.0), 142);
+        assert_eq!(percent_of_budget(850.0, 600.0), Some(142));
         // 900/900 = 1.0 → 100%
-        assert_eq!(percent_of_budget(900.0, 900.0), 100);
+        assert_eq!(percent_of_budget(900.0, 900.0), Some(100));
     }
 
     // -----------------------------------------------------------------------
@@ -294,9 +300,9 @@ mod tests {
     #[test]
     fn percent_of_budget_rounds_up_at_half() {
         // 0.5 rounds up → 50/100 = 50%, not a boundary; use 1/3 * 100 = 33.33 → 33
-        assert_eq!(percent_of_budget(1.0, 3.0), 33);
+        assert_eq!(percent_of_budget(1.0, 3.0), Some(33));
         // 2/3 * 100 = 66.67 → 67
-        assert_eq!(percent_of_budget(2.0, 3.0), 67);
+        assert_eq!(percent_of_budget(2.0, 3.0), Some(67));
     }
 
     #[test]
@@ -429,5 +435,54 @@ mod tests {
         ];
         let report = compute_spending_report(&txns, &[], &zero_cashflow());
         assert_eq!(report.total_spent, 1570.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG 1 RED: zero budget with nonzero spend must NOT produce i64::MAX percent
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn zero_budget_with_spend_produces_no_percent_and_is_over_budget() {
+        // A Monarch category with a $0 budget and any spending:
+        // - percent_of_budget should be None (not i64::MAX from inf-cast)
+        // - the category IS over budget (spent > budget)
+        let txns = vec![make_txn("Netflix", 15.99, "Streaming", "2026-05-15")];
+        let budgets = vec![make_budget("Streaming", 0.0)];
+        let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
+
+        let cat = report.by_category.get("Streaming").expect("Streaming category must exist");
+        assert_ne!(
+            cat.percent_of_budget,
+            Some(i64::MAX),
+            "zero budget with spend must not produce i64::MAX percent"
+        );
+        assert_eq!(
+            cat.percent_of_budget,
+            None,
+            "zero budget should yield no percent (division by zero)"
+        );
+        assert!(
+            report.over_budget_categories.contains(&"Streaming".to_string()),
+            "spending on a $0-budget category must still be classified over budget"
+        );
+    }
+
+    #[test]
+    fn zero_budget_with_zero_spend_produces_no_percent_and_is_not_over_budget() {
+        // $0 budget, $0 spend: NaN→0 is wrong — should also be None
+        let txns = vec![make_txn("Netflix", 0.0, "Streaming", "2026-05-15")];
+        let budgets = vec![make_budget("Streaming", 0.0)];
+        let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
+
+        let cat = report.by_category.get("Streaming").expect("Streaming category must exist");
+        assert_eq!(
+            cat.percent_of_budget,
+            None,
+            "zero budget with zero spend should yield None percent (0/0 = NaN, not 0)"
+        );
+        assert!(
+            !report.over_budget_categories.contains(&"Streaming".to_string()),
+            "zero spend on $0-budget category is not over budget"
+        );
     }
 }
