@@ -1,4 +1,4 @@
-@ISSUE-B3 @not_implemented
+@ISSUE-B3
 Feature: Recurring charge scan
   Hidden subscription creep is money lost invisibly. This tool scans the
   household's recurring charges and surfaces two signals: charges whose amount
