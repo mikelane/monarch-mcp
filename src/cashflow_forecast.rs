@@ -9,6 +9,7 @@ use serde::Serialize;
 ///
 /// `amount` follows the Monarch sign convention: negative for outflows
 /// (bills/subscriptions), positive for inflows (income streams).
+#[derive(Debug)]
 pub struct RecurringItem {
     pub merchant: String,
     /// Negative for outflows, positive for inflows — Monarch convention.

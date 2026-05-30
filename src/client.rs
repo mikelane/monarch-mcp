@@ -146,6 +146,25 @@ pub struct Tag {
 // Raw GraphQL response deserialization helpers (Monarch's real shapes)
 // ---------------------------------------------------------------------------
 
+/// One item from `recurringTransactionItems[]` (ADR 0003).
+#[derive(Debug, Deserialize)]
+struct RecurringTransactionItemRaw {
+    pub stream: RecurringStreamRaw,
+    #[serde(rename = "isPast")]
+    pub is_past: bool,
+    pub amount: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecurringStreamRaw {
+    pub merchant: RecurringMerchantRaw,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecurringMerchantRaw {
+    pub name: String,
+}
+
 /// One item in `aggregateSnapshots[]`.
 #[derive(Debug, Deserialize)]
 struct AggregateSnapshot {
@@ -828,6 +847,76 @@ impl MonarchClient {
         Ok(NetWorthHistory { prior_month_net_worth })
     }
 
+    /// Fetch upcoming recurring transaction items for a date range (ADR 0003).
+    ///
+    /// Uses `Web_GetUpcomingRecurringTransactionItems` — the real Monarch operation
+    /// validated against live data. Returns items mapped to the internal
+    /// `cashflow_forecast::RecurringItem` shape. HTTP 401 maps to `SessionExpired`.
+    ///
+    /// `amount` on each item follows Monarch sign convention: negative for outflows
+    /// (bills), positive for income streams.
+    pub async fn get_recurring(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<Vec<crate::cashflow_forecast::RecurringItem>, MonarchError> {
+        let data = self
+            .graphql(
+                "Web_GetUpcomingRecurringTransactionItems",
+                "query Web_GetUpcomingRecurringTransactionItems(
+                  $startDate: Date!,
+                  $endDate: Date!,
+                  $filters: RecurringTransactionFilter
+                ) {
+                  recurringTransactionItems(
+                    startDate: $startDate
+                    endDate: $endDate
+                    filters: $filters
+                  ) {
+                    stream {
+                      id
+                      frequency
+                      amount
+                      isApproximate
+                      merchant {
+                        id
+                        name
+                        logoUrl
+                        __typename
+                      }
+                      __typename
+                    }
+                    date
+                    isPast
+                    transactionId
+                    amount
+                    amountDiff
+                    category { id name __typename }
+                    account { id displayName logoUrl __typename }
+                    __typename
+                  }
+                }",
+                json!({
+                    "startDate": start_date,
+                    "endDate": end_date,
+                }),
+            )
+            .await?;
+
+        let raw: Vec<RecurringTransactionItemRaw> =
+            serde_json::from_value(data["recurringTransactionItems"].clone())
+                .map_err(|e| MonarchError::Internal(format!("parse recurring items: {e}")))?;
+
+        Ok(raw
+            .into_iter()
+            .map(|r| crate::cashflow_forecast::RecurringItem {
+                merchant: r.stream.merchant.name,
+                amount: r.amount,
+                is_past: r.is_past,
+            })
+            .collect())
+    }
+
     /// Apply a category/tags/notes change to a single transaction.
     ///
     /// Uses `Common_UpdateTransactionMutation` with the `input: {id, …}` shape
@@ -1325,6 +1414,85 @@ mod tests {
         assert_eq!(tags.len(), 2);
         assert_eq!(tags[0].name, "business");
         assert_eq!(tags[1].name, "personal");
+    }
+
+    // -----------------------------------------------------------------------
+    // Web_GetUpcomingRecurringTransactionItems: real response shape (ADR 0003)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_recurring_parses_real_response_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "recurringTransactionItems": [
+                        {
+                            "stream": {
+                                "id": "stream-1",
+                                "frequency": "monthly",
+                                "amount": -1500.0,
+                                "isApproximate": false,
+                                "merchant": {
+                                    "id": "m-1",
+                                    "name": "Landlord",
+                                    "logoUrl": null,
+                                    "__typename": "RecurringTransactionStream"
+                                },
+                                "__typename": "RecurringTransactionStream"
+                            },
+                            "date": "2026-05-15",
+                            "isPast": false,
+                            "transactionId": null,
+                            "amount": -1500.0,
+                            "amountDiff": 0.0,
+                            "category": {"id": "cat-1", "name": "Rent", "__typename": "Category"},
+                            "account": {"id": "acct-1", "displayName": "Checking", "logoUrl": null, "__typename": "Account"},
+                            "__typename": "RecurringTransactionItem"
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let items = client.get_recurring("2026-05-01", "2026-05-31").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].merchant, "Landlord");
+        assert!((items[0].amount - (-1500.0)).abs() < 0.01);
+        assert!(!items[0].is_past);
+    }
+
+    #[tokio::test]
+    async fn get_recurring_returns_empty_list_when_no_items() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"recurringTransactionItems": []}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let items = client.get_recurring("2026-05-01", "2026-05-31").await.unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_recurring_401_maps_to_session_expired() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({"detail": "Invalid token."})))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let err = client.get_recurring("2026-05-01", "2026-05-31").await.unwrap_err();
+        assert!(matches!(err, MonarchError::SessionExpired));
     }
 
     // -----------------------------------------------------------------------
