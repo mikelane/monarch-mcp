@@ -84,7 +84,9 @@ production binary does not exist yet. There are **no undefined step** errors.
 |---|---|---|
 | `MONARCH_MCP_BIN` | `../target/debug/monarch-mcp` | Path to the compiled Rust MCP binary |
 | `MONARCH_BASE` | set by harness | Base URL of the mock (or live) Monarch server — passed to the MCP binary |
+| `MONARCH_TOKEN` | `mock-test-token-abc123` | Token injected into the binary to skip interactive login |
 | `MONARCH_GOALS_FILE` | temp file per scenario | Path to the goals TOML file the MCP binary reads for `progress_vs_goals` |
+| `MONARCH_CONFIG_DIR` | auto-set to a temp dir | Session file directory; the harness always sets this to an isolated temp path so BDD tests never touch `~/.config/monarch-mcp/session.json` |
 
 To run against a custom binary:
 
@@ -104,6 +106,18 @@ MONARCH_MCP_BIN=/path/to/my/binary uv run behave --tags=@ISSUE-A4
    JSON-RPC. Fail with a clear assertion error if the binary is missing.
 5. **Then steps** — assert on the JSON returned by the tool.
 6. **`after_scenario`** — stops the MCP subprocess; deletes the temp goals file.
+
+## Test pyramid
+
+This project uses three tiers, each catching a different class of problem:
+
+| Tier | What | How to run | When |
+|------|------|-----------|------|
+| **Small** | Unit tests in `src/**/*.rs`. Pure computation (no I/O) and wiremock-based client transport tests. | `cargo test` | Always — fast, in-process |
+| **Medium** | Behave acceptance tests in `bdd/features/`. Drive the real binary over stdio against the mock Monarch server. | `cd bdd && uv run behave` | Always — catches wiring bugs the unit tests miss |
+| **Large** | Live integration tests in `tests/live_integration.rs`. Call the real Monarch API and assert structural validity (no schema errors, sane ranges). | `MONARCH_LIVE=1 cargo test --test live_integration -- --nocapture` | On demand — requires a valid session token in `~/.config/monarch-mcp/session.json` |
+
+The large tier does not run in CI or as part of `cargo test`. Re-authenticate with `cargo run -- login` before running it.
 
 ## Advancing from RED to GREEN
 
