@@ -121,7 +121,15 @@ Own spec→plan→build cycle when reached.
 - **B2 — no graceful degradation on partial/null Monarch responses** (`src/client.rs`): bare `f64` fields lack `#[serde(default)]`; a single `null` balance (unsynced account) fails the whole accounts parse. Add defaults / per-element skip per the spec's "degrade gracefully" goal.
 - **B3 — test runs pollute the real user session file** (`src/client.rs` + `bdd/`): running the binary under behave wrote to the real `~/.config/monarch-mcp/session.json`, clobbering the user's token. Tests must isolate config (override HOME or a `MONARCH_CONFIG_DIR`/`XDG_CONFIG_HOME` to a temp dir); the binary should not persist a token that came from `MONARCH_TOKEN` env.
 
+## Progress
+- **Epic A — DONE.** All 4 Tier-1 tools built (TDD), Gate 1 + Gate 3 run/remediated.
+- **Epic C1 — DONE.** Aligned to REAL Monarch (ADR 0002), test pyramid established
+  (203 small / 36 medium / 5 live). Validated on real data (net worth $510k). Merged to main.
+- **Epic B — IN PROGRESS.** Tier-2 tools. Lesson applied: capture real shapes first;
+  mock from real captures; small+medium+large tiers per tool (no doubles-only).
+
 ## Immediate next action
-A1 harness is RED. After the Gate 1 remediation (auth-expired, boundary, empty-state,
-negative net worth, stronger capability-denial scenarios) lands and re-confirms RED, start
-**A2 (`monarch-client`)** + **A3 (server/goals-store)**. Scenarios tagged `@ISSUE-A4..A7`.
+**Epic B bootstrap**: capture real Monarch shapes for the new ops (recurring transactions,
+net-worth snapshots over a range, forecast inputs) → ADR 0003 → Gherkin (@ISSUE-B1..B3
+@not_implemented) for `cashflow_forecast`/`net_worth_trend`/`recurring_scan` → extend the
+mock with REAL shapes → RED. Then implement each tool with all three tiers.
