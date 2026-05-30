@@ -119,6 +119,7 @@ Own spec→plan→build cycle when reached.
 ## Deferred bugs (Gate 3 adversarial findings, MEDIUM)
 - **B1 — emergency-fund reserve detection too narrow** (`src/progress_vs_goals.rs`): counts only `account_type.name == "savings"`; a money-market/HYSA/brokerage emergency fund reads as $0 → false "off". Broaden the asset set or classify by sign (as `financial_overview` does).
 - **B2 — no graceful degradation on partial/null Monarch responses** (`src/client.rs`): bare `f64` fields lack `#[serde(default)]`; a single `null` balance (unsynced account) fails the whole accounts parse. Add defaults / per-element skip per the spec's "degrade gracefully" goal.
+- **B3 — test runs pollute the real user session file** (`src/client.rs` + `bdd/`): running the binary under behave wrote to the real `~/.config/monarch-mcp/session.json`, clobbering the user's token. Tests must isolate config (override HOME or a `MONARCH_CONFIG_DIR`/`XDG_CONFIG_HOME` to a temp dir); the binary should not persist a token that came from `MONARCH_TOKEN` env.
 
 ## Immediate next action
 A1 harness is RED. After the Gate 1 remediation (auth-expired, boundary, empty-state,
