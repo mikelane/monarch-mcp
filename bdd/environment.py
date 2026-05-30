@@ -30,6 +30,13 @@ def before_scenario(context, scenario):
     # Reset all mock fixture state to defaults
     reset_fixtures()
 
+    # Behave stores attributes whose names begin with '_' directly in
+    # context.__dict__ (bypassing the per-scenario layer stack), so they
+    # leak across scenarios.  Explicitly clear them here.
+    context._transactions = []
+    context._budgets = []
+    context.prior_month_spending = 0.0
+
     # Temporary goals file — each scenario gets a clean slate
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".toml", delete=False, prefix="monarch_goals_"
