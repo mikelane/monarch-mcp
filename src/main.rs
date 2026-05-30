@@ -14,6 +14,7 @@ mod client;
 mod error;
 mod financial_overview;
 mod goals;
+mod spending_report;
 mod tools;
 
 use anyhow::Result;

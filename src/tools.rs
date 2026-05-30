@@ -3,6 +3,7 @@
 use crate::client::MonarchClient;
 use crate::error::MonarchError;
 use crate::financial_overview::compute_overview;
+use crate::spending_report::compute_spending_report;
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::router::tool::ToolRouter,
@@ -60,10 +61,25 @@ impl MonarchTools {
         &self,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Err(McpError::internal_error(
-            "spending_report is not yet implemented (issue A5)",
-            None,
-        ))
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_spending(&client).await {
+            Ok(report) => serde_json::to_value(&report)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
     }
 
     #[tool(description = "Identify uncategorized transactions and suggest category/tags/notes \
@@ -104,6 +120,15 @@ async fn fetch_and_compute(
     let cashflow = client.get_cashflow().await?;
     let history = client.get_net_worth_history().await?;
     Ok(compute_overview(&accounts, &cashflow, &history))
+}
+
+async fn fetch_and_compute_spending(
+    client: &MonarchClient,
+) -> Result<crate::spending_report::SpendingReport, MonarchError> {
+    let transactions = client.get_transactions().await?;
+    let budgets = client.get_budgets().await?;
+    let cashflow = client.get_cashflow().await?;
+    Ok(compute_spending_report(&transactions, &budgets, &cashflow))
 }
 
 #[rmcp::tool_handler]

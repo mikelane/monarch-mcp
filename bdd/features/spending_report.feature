@@ -1,4 +1,4 @@
-@ISSUE-A5 @not_implemented
+@ISSUE-A5
 Feature: Spending report
   The advisor's weekly/monthly workhorse. It groups spending by category,
   compares each category against its budget, flags overspending, surfaces
