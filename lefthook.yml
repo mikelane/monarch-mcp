@@ -1,0 +1,17 @@
+# Git hooks for monarch-mcp. Install with `lefthook install` (or `mise run setup`).
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+      fail_text: "Run `cargo fmt --all` to format."
+    clippy:
+      glob: "*.rs"
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+pre-push:
+  commands:
+    test:
+      run: cargo test
+      fail_text: "Unit tests must pass before pushing."

@@ -1,0 +1,13 @@
+# Copy to `goals.toml` and point MONARCH_GOALS_FILE at it (the .mcp.json env does this).
+# Every section is OPTIONAL — omit a goal and `progress_vs_goals` simply won't report it.
+# Nothing here is sensitive; it's just your targets.
+
+[savings_rate]
+target_percent = 20.0        # save at least 20% of income
+
+[emergency_fund]
+target_months = 6.0          # hold ~6 months of expenses in liquid reserves
+
+[debt_payoff]
+target_date = "2027-12-01"   # ISO-8601 payoff target
+monthly_payment = 500.0      # optional

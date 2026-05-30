@@ -1,0 +1,34 @@
+# Dev environment + task runner for monarch-mcp.
+# `mise install` provisions tools; `mise run <task>` runs a task.
+# Rust itself is pinned via rust-toolchain.toml (rustup honors it).
+
+[tools]
+uv = "latest"        # Python runner for the BDD (medium) tier
+lefthook = "latest"  # git hooks
+
+[tasks.setup]
+description = "Install git hooks and BDD dependencies"
+run = ["lefthook install", "cd bdd && uv sync"]
+
+[tasks.fmt]
+description = "Format all Rust code"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Format check + clippy (deny warnings)"
+run = [
+  "cargo fmt --all -- --check",
+  "cargo clippy --all-targets --all-features -- -D warnings",
+]
+
+[tasks.test]
+description = "Small tier: cargo unit tests"
+run = "cargo test"
+
+[tasks.bdd]
+description = "Medium tier: behave against the mock Monarch server"
+run = "cd bdd && uv run behave"
+
+[tasks.live]
+description = "Large tier: live integration tests (requires a real Monarch session)"
+run = "MONARCH_LIVE=1 cargo test --test live_integration -- --nocapture"

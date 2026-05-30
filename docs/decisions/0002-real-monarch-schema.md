@@ -607,7 +607,7 @@ mutation Common_UpdateTransactionMutation($input: UpdateTransactionMutationInput
 
 ## Sources
 
-- `monarchmoneycommunity` Python library (installed at `.tools/monarch-mcp-server/.venv/lib/…/monarchmoney/monarchmoney.py`)
-- `.tools/monarch-mcp-server/src/monarch_mcp_server/tools/` (robcerda's MCP server)
+- `monarchmoneycommunity` Python library (the `monarchmoney` module source)
+- `robcerda/monarch-mcp-server` (a community Monarch MCP server) for cross-reference
 - Live validation: all operations confirmed HTTP 200 against `https://api.monarch.com/graphql`
 - Real captures (with values) in `/tmp/` only — not committed

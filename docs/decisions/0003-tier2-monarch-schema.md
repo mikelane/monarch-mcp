@@ -47,9 +47,7 @@ Content-Type: application/json
 
 Used by: `cashflow_forecast` (upcoming bill amounts + dates), `recurring_scan` (detect changes).
 
-**Source:** `monarchmoney` library —
-`get_recurring_transactions()` in `monarchmoney.py` (confirmed at
-`/Users/mikelane/.cache/uv/archive-v0/.../monarchmoney/monarchmoney.py`).
+**Source:** `monarchmoney` library — `get_recurring_transactions()` in `monarchmoney.py`.
 
 ```graphql
 query Web_GetUpcomingRecurringTransactionItems(
@@ -256,10 +254,8 @@ These operations from ADR 0002 are also used by Epic-B tools without modificatio
 
 ## Sources
 
-- `monarchmoney` Python library installed at
-  `/Users/mikelane/.cache/uv/archive-v0/vLK_UHjrOZ-WX2qar3Lg5/lib/python3.10/site-packages/monarchmoney/monarchmoney.py`
-- `.tools/monarch-mcp-server/src/monarch_mcp_server/tools/transactions.py` (recurring tool usage)
-- `.tools/monarch-mcp-server/src/monarch_mcp_server/tools/financial.py` (net worth usage)
+- `monarchmoney` Python library (the `monarchmoney` module source)
+- `robcerda/monarch-mcp-server` — `tools/transactions.py` (recurring) and `tools/financial.py` (net worth)
 - Live HTTP 200 validation against `https://api.monarch.com/graphql`
 - Raw captures (with real values) in `/tmp/recurring_raw.json`, `/tmp/snapshots_by_type_raw.json`,
   `/tmp/cashflow_3month_raw.json` — not committed

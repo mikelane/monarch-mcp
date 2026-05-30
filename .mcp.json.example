@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "monarch-mcp": {
+      "type": "stdio",
+      "command": "monarch-mcp",
+      "args": [],
+      "env": {
+        "MONARCH_GOALS_FILE": "./goals.toml"
+      }
+    }
+  }
+}

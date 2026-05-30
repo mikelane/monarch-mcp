@@ -3,12 +3,14 @@ target/
 **/target/
 *.rs.bk
 
-# Secrets / sessions (never commit)
+# Secrets / sessions / personal config (never commit)
 .env
 .env.*
 *.session
 session.json
 .mm/
+goals.toml
+.mcp.json
 
 # Reference clones & scratch (local only)
 .tools/
