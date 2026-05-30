@@ -34,6 +34,7 @@
 use monarch_mcp::client::MonarchClient;
 use monarch_mcp::financial_overview::compute_overview;
 use monarch_mcp::net_worth_trend::compute_trend;
+use monarch_mcp::recurring_scan::compute_scan;
 use std::env;
 
 fn live_enabled() -> bool {
@@ -340,6 +341,91 @@ async fn get_snapshots_by_account_type_returns_valid_structure_from_real_monarch
         trend.total_liabilities >= 0.0,
         "total_liabilities must be non-negative"
     );
+}
+
+/// Verify that `recurring_scan`'s data path works end-to-end against the real
+/// Monarch API: no GraphQL errors, all items parse into `RecurringScanItem`,
+/// and `compute_scan` produces structurally valid output.
+///
+/// Does NOT assert specific merchants, amounts, or counts — those change over
+/// time. Asserts structural validity only (finite numbers, non-empty strings,
+/// correct sign conventions).
+#[tokio::test]
+async fn recurring_scan_returns_valid_structure_from_real_monarch() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+
+    let items = client
+        .get_recurring_for_scan(&cur_start, &cur_end)
+        .await
+        .expect("Web_GetUpcomingRecurringTransactionItems must succeed against real Monarch");
+
+    eprintln!("recurring items returned: {}", items.len());
+
+    for item in &items {
+        assert!(
+            !item.merchant.is_empty(),
+            "merchant name must not be empty"
+        );
+        assert!(
+            item.stream_amount.is_finite(),
+            "stream_amount must be finite for {:?}",
+            item.merchant
+        );
+        assert!(
+            item.actual_amount.is_finite(),
+            "actual_amount must be finite for {:?}",
+            item.merchant
+        );
+        assert!(
+            item.amount_diff.is_finite(),
+            "amount_diff must be finite for {:?}",
+            item.merchant
+        );
+        // Monarch convention: outflows stored as negative amounts
+        assert!(
+            item.stream_amount <= 0.0,
+            "stream_amount must be non-positive (outflow) for {:?}, got {}",
+            item.merchant,
+            item.stream_amount
+        );
+        assert!(
+            item.actual_amount <= 0.0,
+            "actual_amount must be non-positive (outflow) for {:?}, got {}",
+            item.merchant,
+            item.actual_amount
+        );
+    }
+
+    // Feed items into compute_scan and verify structural validity.
+    let scan = compute_scan(&items);
+    eprintln!("creeping_charges: {}", scan.creeping_charges.len());
+    eprintln!("upcoming_renewals: {}", scan.upcoming_renewals.len());
+
+    for charge in &scan.creeping_charges {
+        assert!(
+            !charge.merchant.is_empty(),
+            "creeping charge merchant must not be empty"
+        );
+        assert!(
+            charge.amount_change.is_finite() && charge.amount_change != 0.0,
+            "creeping charge amount_change must be finite and non-zero for {:?}, got {}",
+            charge.merchant,
+            charge.amount_change
+        );
+    }
+
+    for renewal in &scan.upcoming_renewals {
+        assert!(
+            !renewal.merchant.is_empty(),
+            "upcoming renewal merchant must not be empty"
+        );
+    }
 }
 
 /// Verify that GetJointPlanningData returns budget entries with valid

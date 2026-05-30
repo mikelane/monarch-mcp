@@ -162,11 +162,20 @@ struct RecurringTransactionItemRaw {
     #[serde(rename = "isPast")]
     pub is_past: bool,
     pub amount: f64,
+    /// Difference between actual and stream amount (actual − stream).
+    /// Positive = price increase, negative = price decrease.
+    #[serde(rename = "amountDiff")]
+    pub amount_diff: f64,
 }
 
 #[derive(Debug, Deserialize)]
 struct RecurringStreamRaw {
     pub merchant: RecurringMerchantRaw,
+    /// Monarch's expected amount for this stream (negative = outflow).
+    pub amount: f64,
+    /// True for utility-style streams whose amount varies by design.
+    #[serde(rename = "isApproximate")]
+    pub is_approximate: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -926,6 +935,77 @@ impl MonarchClient {
             .collect())
     }
 
+    /// Fetch recurring items with the full detail needed by `recurring_scan` (ADR 0003).
+    ///
+    /// Returns [`crate::recurring_scan::RecurringScanItem`] values that include
+    /// `stream_amount`, `amount_diff`, and `is_approximate` — fields not present in
+    /// the slimmer [`get_recurring`] result used by `cashflow_forecast`.
+    /// HTTP 401 maps to `SessionExpired`.
+    pub async fn get_recurring_for_scan(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<Vec<crate::recurring_scan::RecurringScanItem>, MonarchError> {
+        let data = self
+            .graphql(
+                "Web_GetUpcomingRecurringTransactionItems",
+                "query Web_GetUpcomingRecurringTransactionItems(
+                  $startDate: Date!,
+                  $endDate: Date!,
+                  $filters: RecurringTransactionFilter
+                ) {
+                  recurringTransactionItems(
+                    startDate: $startDate
+                    endDate: $endDate
+                    filters: $filters
+                  ) {
+                    stream {
+                      id
+                      frequency
+                      amount
+                      isApproximate
+                      merchant {
+                        id
+                        name
+                        logoUrl
+                        __typename
+                      }
+                      __typename
+                    }
+                    date
+                    isPast
+                    transactionId
+                    amount
+                    amountDiff
+                    category { id name __typename }
+                    account { id displayName logoUrl __typename }
+                    __typename
+                  }
+                }",
+                json!({
+                    "startDate": start_date,
+                    "endDate": end_date,
+                }),
+            )
+            .await?;
+
+        let raw: Vec<RecurringTransactionItemRaw> =
+            serde_json::from_value(data["recurringTransactionItems"].clone())
+                .map_err(|e| MonarchError::Internal(format!("parse recurring items for scan: {e}")))?;
+
+        Ok(raw
+            .into_iter()
+            .map(|r| crate::recurring_scan::RecurringScanItem {
+                merchant: r.stream.merchant.name,
+                stream_amount: r.stream.amount,
+                actual_amount: r.amount,
+                amount_diff: r.amount_diff,
+                is_approximate: r.stream.is_approximate,
+                is_past: r.is_past,
+            })
+            .collect())
+    }
+
     /// Fetch monthly net-worth snapshots grouped by account type (ADR 0003).
     ///
     /// Uses `GetSnapshotsByAccountType` — the real Monarch operation validated against
@@ -1537,6 +1617,104 @@ mod tests {
         let client = client_for(&server.uri());
         let items = client.get_recurring("2026-05-01", "2026-05-31").await.unwrap();
         assert!(items.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // get_recurring_for_scan: enriched shape with stream.amount, amountDiff, isApproximate
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_recurring_for_scan_parses_enriched_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "recurringTransactionItems": [
+                        {
+                            "stream": {
+                                "id": "stream-2",
+                                "frequency": "monthly",
+                                "amount": -9.99,
+                                "isApproximate": false,
+                                "merchant": {
+                                    "id": "m-2",
+                                    "name": "StreamingCo",
+                                    "logoUrl": null,
+                                    "__typename": "RecurringTransactionStream"
+                                },
+                                "__typename": "RecurringTransactionStream"
+                            },
+                            "date": "2026-05-20",
+                            "isPast": false,
+                            "transactionId": null,
+                            "amount": -13.99,
+                            "amountDiff": 4.0,
+                            "category": {"id": "cat-2", "name": "Entertainment", "__typename": "Category"},
+                            "account": {"id": "acct-1", "displayName": "Checking", "logoUrl": null, "__typename": "Account"},
+                            "__typename": "RecurringTransactionItem"
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let items = client.get_recurring_for_scan("2026-05-01", "2026-05-31").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].merchant, "StreamingCo");
+        assert!((items[0].stream_amount - (-9.99)).abs() < 0.01);
+        assert!((items[0].actual_amount - (-13.99)).abs() < 0.01);
+        assert!((items[0].amount_diff - 4.0).abs() < 0.01);
+        assert!(!items[0].is_approximate);
+        assert!(!items[0].is_past);
+    }
+
+    #[tokio::test]
+    async fn get_recurring_for_scan_captures_approximate_flag() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "recurringTransactionItems": [
+                        {
+                            "stream": {
+                                "id": "stream-3",
+                                "frequency": "monthly",
+                                "amount": -120.0,
+                                "isApproximate": true,
+                                "merchant": {
+                                    "id": "m-3",
+                                    "name": "ElectricUtil",
+                                    "logoUrl": null,
+                                    "__typename": "RecurringTransactionStream"
+                                },
+                                "__typename": "RecurringTransactionStream"
+                            },
+                            "date": "2026-05-10",
+                            "isPast": true,
+                            "transactionId": "txn-99",
+                            "amount": -134.50,
+                            "amountDiff": 14.5,
+                            "category": {"id": "cat-3", "name": "Utilities", "__typename": "Category"},
+                            "account": {"id": "acct-1", "displayName": "Checking", "logoUrl": null, "__typename": "Account"},
+                            "__typename": "RecurringTransactionItem"
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let items = client.get_recurring_for_scan("2026-05-01", "2026-05-31").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].is_approximate, "utility stream must be marked approximate");
+        assert!(items[0].is_past, "past item must be marked is_past");
+        assert!((items[0].stream_amount - (-120.0)).abs() < 0.01);
+        assert!((items[0].actual_amount - (-134.50)).abs() < 0.01);
     }
 
     // -----------------------------------------------------------------------

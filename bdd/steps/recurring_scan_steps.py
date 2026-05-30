@@ -22,8 +22,12 @@ def step_recurring_charges(context):
             "merchant": row["merchant"],
             "stream_amount": float(row["stream_amount"]),
             "frequency": row["frequency"],
-            "is_approximate": row["is_approximate"].lower() == "true",
         }
+        # is_approximate is optional — defaults to False (exact/fixed charge)
+        if "is_approximate" in row.headings:
+            item["is_approximate"] = row["is_approximate"].lower() == "true"
+        else:
+            item["is_approximate"] = False
         # actual_amount is optional — defaults to stream_amount (stable charge)
         if "actual_amount" in row.headings:
             item["actual_amount"] = float(row["actual_amount"])

@@ -17,6 +17,7 @@ mod financial_overview;
 mod goals;
 mod net_worth_trend;
 mod progress_vs_goals;
+mod recurring_scan;
 mod spending_report;
 mod triage;
 mod tools;

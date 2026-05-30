@@ -7,6 +7,7 @@ use crate::financial_overview::compute_overview;
 use crate::net_worth_trend::compute_trend;
 use crate::goals::Goals;
 use crate::progress_vs_goals::compute_progress;
+use crate::recurring_scan::compute_scan;
 use crate::spending_report::compute_spending_report;
 use crate::triage::{build_category_suggestion_map, parse_raw_changes, partition_changeset, propose_changes};
 use rmcp::{
@@ -226,10 +227,25 @@ impl MonarchTools {
         &self,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Err(McpError::invalid_request(
-            "recurring_scan is not yet implemented (Epic B — ISSUE-B3)",
-            None,
-        ))
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_scan(&client).await {
+            Ok(scan) => serde_json::to_value(&scan)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
     }
 
     #[tool(description = "Measure actual finances against the household's remembered goals \
@@ -406,6 +422,14 @@ async fn fetch_and_compute_progress(
         client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
     )?;
     Ok(compute_progress(&goals, &accounts, &cashflow))
+}
+
+async fn fetch_and_compute_scan(
+    client: &MonarchClient,
+) -> Result<crate::recurring_scan::ScanResult, MonarchError> {
+    let (cur_start, cur_end) = current_month_range();
+    let items = client.get_recurring_for_scan(&cur_start, &cur_end).await?;
+    Ok(compute_scan(&items))
 }
 
 async fn fetch_and_compute_forecast(
