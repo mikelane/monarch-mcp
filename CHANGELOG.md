@@ -6,6 +6,75 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/mikelane/monarch-mcp/releases/tag/v0.1.0) - 2026-05-30
+
+### ### Added
+
+- implement recurring_scan compound tool (ISSUE-B3)
+- implement net_worth_trend tool (ISSUE-B2)
+- implement cashflow_forecast tool handler — all 5 @ISSUE-B1 BDD scenarios GREEN
+- add get_recurring() client op for Web_GetUpcomingRecurringTransactionItems
+- add cashflow_forecast compute module with TDD
+- register Epic B stub tools and real-shaped mock handlers (ISSUE-B1/B2/B3)
+- add large integration test tier and fix session isolation (B5)
+- port client to real Monarch GraphQL operations (ADR 0002)
+- implement progress_vs_goals tool (issue A7)
+- implement triage_uncategorized and apply_changeset tools (issue A6)
+- implement spending_report tool (issue A5)
+- implement financial_overview tool (issue A4)
+- add monarch-mcp core scaffold (client, goals, tools, server)
+
+### ### Documentation
+
+- record D-NWT deferred bug + systemic mock-nulls lesson (Gate 3)
+- capture real Tier-2 Monarch schema shapes (ADR 0003)
+- mark Epic A + C1 done, kick off Epic B (Tier-2 tools)
+- document test pyramid tiers and MONARCH_CONFIG_DIR env var
+- capture real Monarch GraphQL schema in ADR 0002
+- log B3 test-isolation bug (tests clobber real session file)
+- record Gate 3 deferred bugs (B1 reserve detection, B2 partial responses)
+- board updates + ignore spike scratch (A1 follow-up)
+- ADR 0001 — Monarch auth flow confirmed (spike passed)
+- design spec and planning board for Monarch MCP advisor
+
+### ### Fixed
+
+- drop invalid changelog_commit_message from release-plz.toml ([#10](https://github.com/mikelane/monarch-mcp/pull/10))
+- replace unsafe env mutations with temp_env scoped guards
+- add null-to-zero deserialization for numeric fields in Monarch responses
+- broaden emergency-fund reserves to all liquid cash-equivalent types
+- use first-seen-month baseline in net_worth_trend to prevent fabricated swings
+- handle null amountDiff/merchant in recurring items, deterministic biggest_mover tie-break
+- correct arithmetic typo in @ISSUE-B2 net_worth_change assertion
+- align step text with feature file (trailing colons, singular/plural)
+- handle negative Monarch budget amounts in spending_report
+- realign mock server and BDD harness to real Monarch response shapes
+- reject forbidden fields in apply_changeset via allowlist + safe parse
+- return None from percent_of_budget when budget is zero
+- reset behave context underscore attrs between scenarios
+
+### ### Miscellaneous
+
+- hands-off release automation (release-plz + cargo-dist, no Homebrew tap) ([#2](https://github.com/mikelane/monarch-mcp/pull/2))
+- add PR checks ([#1](https://github.com/mikelane/monarch-mcp/pull/1))
+- prepare for open-source release
+- apply rustfmt across the codebase
+- register monarch-mcp in Cowork (.mcp.json) + advisor instructions
+- add Cargo.lock for reproducible builds
+
+### ### Testing
+
+- add null-bearing BDD fixtures and null-handling scenario for recurring scan
+- remove @not_implemented from @ISSUE-B3 scenarios (RED)
+- remove @not_implemented from @ISSUE-B2 scenarios (RED)
+- add live integration test for get_recurring (MONARCH_LIVE=1 gated)
+- add @not_implemented Gherkin for Epic B (ISSUE-B1/B2/B3)
+- add BDD scenarios for negative-budget (loan-repayment) classification
+- clear @not_implemented on A4/A6 features (all tools GREEN)
+- add financial_overview aggregation math with TDD unit tests
+- extend BDD harness to cover Gate-1 adversarial review additions
+- stand up Python + behave BDD harness (A1 bootstrap, RED state)
+
 ### Added
 
 - Initial release of the `monarch-mcp` MCP server with seven compound tools:
