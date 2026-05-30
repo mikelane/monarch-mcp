@@ -1,0 +1,30 @@
+[package]
+name = "monarch-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Monarch Money MCP server — agentic budgeting companion"
+publish = false
+
+[[bin]]
+name = "monarch-mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "1.7.0", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+schemars = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+toml = "0.8"
+rpassword = "7"
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = "3"
