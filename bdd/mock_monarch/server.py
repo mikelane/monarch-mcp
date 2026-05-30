@@ -627,6 +627,12 @@ def _handle_web_get_upcoming_recurring(body: dict) -> dict:
     `is_approximate` on the stream marks utility-style charges whose amount
     varies — the recurring_scan tool must not flag these as creeping.
     `actual_amount` defaults to `stream_amount` when omitted (stable charge).
+
+    Nullable fields (ADR 0003 §Nullable):
+    - `merchant`: set fixture key `merchant` to None to emit `"merchant": null`.
+      The client defaults the display name to "Unknown" when absent.
+    - `amountDiff`: set fixture key `amount_diff_null` to True to emit
+      `"amountDiff": null`. The client maps null → 0.0 (no measurable drift).
     """
     fixtures = get_fixtures()
     items = []
@@ -637,9 +643,26 @@ def _handle_web_get_upcoming_recurring(body: dict) -> dict:
         frequency = r.get("frequency", "monthly")
         is_approximate = bool(r.get("is_approximate", False))
         is_past = bool(r.get("is_past", False))
-        # amountDiff: difference between actual and stream amount.
-        # Positive when actual > stream (price increase), negative when less.
-        amount_diff = round(actual_amount - abs(stream_amount), 2)
+
+        # amountDiff: null when the fixture explicitly requests it (new/unresolved
+        # stream with no prior occurrence). Otherwise compute from amounts.
+        if r.get("amount_diff_null", False):
+            amount_diff = None
+        else:
+            # Positive when actual > stream (price increase), negative when less.
+            amount_diff = round(actual_amount - abs(stream_amount), 2)
+
+        # merchant: null when the fixture sets merchant to None explicitly.
+        if merchant_name is None:
+            merchant_obj = None
+        else:
+            merchant_obj = {
+                "id": f"merch-{i}",
+                "name": merchant_name,
+                "logoUrl": None,
+                "__typename": "RecurringTransactionStream",
+            }
+
         # transactionId present only for past items
         transaction_id = f"txn-recur-{i}" if is_past else None
         items.append({
@@ -649,12 +672,7 @@ def _handle_web_get_upcoming_recurring(body: dict) -> dict:
                 # Stream amount stored as negative (outflow) per Monarch convention
                 "amount": -abs(stream_amount),
                 "isApproximate": is_approximate,
-                "merchant": {
-                    "id": f"merch-{i}",
-                    "name": merchant_name,
-                    "logoUrl": None,
-                    "__typename": "RecurringTransactionStream",
-                },
+                "merchant": merchant_obj,
                 "__typename": "RecurringTransactionStream",
             },
             "date": r.get("date", "2026-05-15"),

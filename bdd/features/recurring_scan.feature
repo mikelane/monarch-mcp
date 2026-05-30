@@ -70,6 +70,14 @@ Feature: Recurring charge scan
       And the scan does not flag NewsFeed as creeping
       And the scan returns no creeping charges
 
+  Rule: A new or unresolved recurring item (null amountDiff, null merchant) is handled gracefully
+
+    Scenario: A new subscription with null amountDiff and null merchant does not crash or false-flag
+      Given the household has a new unresolved recurring item with no prior amount or merchant
+      When the advisor runs a recurring charge scan
+      Then the scan returns no creeping charges
+      And the scan does not crash
+
   Rule: An expired session surfaces a re-authentication prompt
 
     Scenario: Expired session blocks the scan

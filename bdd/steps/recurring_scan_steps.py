@@ -56,6 +56,30 @@ def step_no_recurring_charges(context):
     )
 
 
+@given("the household has a new unresolved recurring item with no prior amount or merchant")
+def step_new_unresolved_recurring_item(context):
+    """Configure a single recurring item that Monarch would send for a brand-new
+    stream: amountDiff is null (no prior occurrence to diff) and merchant is null
+    (stream not yet resolved to a known merchant). The tool must not crash and
+    must not flag it as a creeping charge (null diff → zero drift)."""
+    requests.post(
+        f"{context.mock_base}/configure",
+        json={
+            "recurring_items": [
+                {
+                    "merchant": None,
+                    "stream_amount": 19.99,
+                    "actual_amount": 19.99,
+                    "frequency": "monthly",
+                    "is_approximate": False,
+                    "is_past": False,
+                    "amount_diff_null": True,
+                }
+            ]
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # When
 # ---------------------------------------------------------------------------
@@ -120,6 +144,14 @@ def step_assert_no_creeping(context):
     result = context.scan_result
     creeping = result.get("creeping_charges", [])
     assert not creeping, f"Expected no creeping_charges but got: {creeping!r}"
+
+
+@then("the scan does not crash")
+def step_scan_does_not_crash(context):
+    """Assert the scan result is a dict (not an error), proving no server-side crash."""
+    assert isinstance(context.scan_result, dict), (
+        f"Expected a result dict but got: {context.scan_result!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
