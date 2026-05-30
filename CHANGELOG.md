@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format is based on
 
 ## [0.1.0](https://github.com/mikelane/monarch-mcp/releases/tag/v0.1.0) - 2026-05-30
 
-### ### Added
+### Added
 
 - implement recurring_scan compound tool (ISSUE-B3)
 - implement net_worth_trend tool (ISSUE-B2)
@@ -24,7 +24,7 @@ All notable changes to this project are documented here. The format is based on
 - implement financial_overview tool (issue A4)
 - add monarch-mcp core scaffold (client, goals, tools, server)
 
-### ### Documentation
+### Documentation
 
 - record D-NWT deferred bug + systemic mock-nulls lesson (Gate 3)
 - capture real Tier-2 Monarch schema shapes (ADR 0003)
@@ -37,7 +37,7 @@ All notable changes to this project are documented here. The format is based on
 - ADR 0001 — Monarch auth flow confirmed (spike passed)
 - design spec and planning board for Monarch MCP advisor
 
-### ### Fixed
+### Fixed
 
 - drop invalid changelog_commit_message from release-plz.toml ([#10](https://github.com/mikelane/monarch-mcp/pull/10))
 - replace unsafe env mutations with temp_env scoped guards
@@ -53,7 +53,7 @@ All notable changes to this project are documented here. The format is based on
 - return None from percent_of_budget when budget is zero
 - reset behave context underscore attrs between scenarios
 
-### ### Miscellaneous
+### Miscellaneous
 
 - hands-off release automation (release-plz + cargo-dist, no Homebrew tap) ([#2](https://github.com/mikelane/monarch-mcp/pull/2))
 - add PR checks ([#1](https://github.com/mikelane/monarch-mcp/pull/1))
@@ -62,7 +62,7 @@ All notable changes to this project are documented here. The format is based on
 - register monarch-mcp in Cowork (.mcp.json) + advisor instructions
 - add Cargo.lock for reproducible builds
 
-### ### Testing
+### Testing
 
 - add null-bearing BDD fixtures and null-handling scenario for recurring scan
 - remove @not_implemented from @ISSUE-B3 scenarios (RED)

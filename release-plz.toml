@@ -20,15 +20,25 @@ changelog_update = true
 
 [changelog]
 # Conventional Commits → CHANGELOG section mapping.
+#
+# `group` values are bare section names — release-plz's body template already
+# prefixes "### ", so a "### Added" group renders as the doubled "### ### Added".
+#
+# Parsers are evaluated in order, first match wins, so both release-commit skip
+# rules MUST precede the "^chore" catch-all. release-plz's own release commits
+# arrive in two shapes depending on squash settings — "chore(release): ..." and
+# "chore: release vX.Y.Z (#N)" — and both must be skipped, or every release
+# spawns a junk follow-on release whose only entry is "release vX.Y.Z".
 commit_parsers = [
-  { message = "^feat", group = "### Added" },
-  { message = "^fix", group = "### Fixed" },
-  { message = "^perf", group = "### Performance" },
-  { message = "^refactor", group = "### Changed" },
-  { message = "^docs", group = "### Documentation" },
-  { message = "^test", group = "### Testing" },
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Testing" },
   { message = "^chore\\(release\\)", skip = true },
-  { message = "^chore", group = "### Miscellaneous" },
-  { message = "^style", group = "### Miscellaneous" },
-  { message = "^ci", group = "### Miscellaneous" },
+  { message = "^chore: release", skip = true },
+  { message = "^chore", group = "Miscellaneous" },
+  { message = "^style", group = "Miscellaneous" },
+  { message = "^ci", group = "Miscellaneous" },
 ]
