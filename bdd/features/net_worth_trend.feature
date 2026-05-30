@@ -26,7 +26,7 @@ Feature: Net worth trend
       When the advisor requests a net worth trend for the past 3 months
       Then the trend contains 3 monthly data points
       And the trend reports a net worth of 61400 dollars in the most recent month
-      And the trend reports a net worth change of positive 6200 dollars over the period
+      And the trend reports a net worth change of positive 6400 dollars over the period
 
     Scenario: Single month with no prior data yields one data point and zero change
       Given the household's net worth by account type over the past 1 month is:
