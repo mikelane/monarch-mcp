@@ -1,0 +1,30 @@
+# Rust
+target/
+**/target/
+*.rs.bk
+
+# Secrets / sessions (never commit)
+.env
+.env.*
+*.session
+session.json
+.mm/
+
+# Reference clones & scratch (local only)
+.tools/
+
+# Python / behave
+__pycache__/
+*.pyc
+.venv/
+.behave_cache/
+
+# Cowork-generated outputs we don't want versioned
+reports/*.md
+!reports/.gitkeep
+
+# Local Claude settings
+.claude/settings.local.json
+
+# macOS
+.DS_Store
