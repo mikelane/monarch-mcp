@@ -128,8 +128,17 @@ pub fn compute_trend(snapshots: &[AccountTypeSnapshot]) -> TrendResult {
         0.0
     };
 
-    // Per-type delta: latest balance for type − earliest balance for type.
-    let earliest_month = &months[0];
+    // Per-type delta: latest balance − the type's own first-seen month balance.
+    //
+    // Semantics: use each account type's first-seen month within the window as its
+    // baseline, NOT the overall window's earliest month. This prevents a fabricated
+    // full-balance swing for types that only appear mid-window (e.g. a brokerage
+    // account opened after the window start). Such a type's change is
+    // latest_balance − first_seen_balance = 0 when it appears only in the latest
+    // month, accurately reflecting "no measurable movement since it appeared".
+    //
+    // The overall net_worth_change (latest_total − earliest_total) is unaffected —
+    // it is computed directly from monthly_snapshots, not from by_account_type.
     let latest_month = months.last().unwrap();
 
     let all_types: Vec<String> = {
@@ -137,6 +146,16 @@ pub fn compute_trend(snapshots: &[AccountTypeSnapshot]) -> TrendResult {
         ts.sort();
         ts.dedup();
         ts
+    };
+
+    // For each type, find its first-seen month (earliest month containing a row for
+    // this type) and use that month's balance as the baseline.
+    let first_seen_month_for = |acct_type: &str| -> &str {
+        months
+            .iter()
+            .find(|m| snapshots.iter().any(|s| &s.month == *m && s.account_type == acct_type))
+            .map(|m| m.as_str())
+            .unwrap_or(latest_month.as_str())
     };
 
     let balance_for = |month: &str, acct_type: &str| -> f64 {
@@ -150,9 +169,10 @@ pub fn compute_trend(snapshots: &[AccountTypeSnapshot]) -> TrendResult {
     let by_account_type: HashMap<String, TypeSummary> = all_types
         .iter()
         .map(|t| {
-            let earliest_bal = balance_for(earliest_month, t);
+            let baseline_month = first_seen_month_for(t);
+            let baseline_bal = balance_for(baseline_month, t);
             let latest_bal = balance_for(latest_month, t);
-            let change = latest_bal - earliest_bal;
+            let change = latest_bal - baseline_bal;
             (t.clone(), TypeSummary { change })
         })
         .collect();

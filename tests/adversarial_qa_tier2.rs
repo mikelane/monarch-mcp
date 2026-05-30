@@ -231,13 +231,11 @@ fn biggest_mover_is_deterministic_on_tie() {
 // Reachable: a new brokerage account opened mid-period appears only in later months.
 // ===========================================================================
 
-// DEFERRED: mid-period account baseline semantics — tracked in D-NWT backlog item.
-// The current implementation reports change = latest_balance - 0 when an account
-// type is absent in the earliest month (e.g. a new brokerage opened mid-period).
-// Fixing this requires deciding what "baseline" means for a type with no prior row.
-// Do NOT fix this here; leave it for the dedicated D-NWT work item.
+// D-NWT fix: use each account type's first-seen month within the window as its
+// baseline. A type absent in the overall earliest month still only contributes
+// movement from its own first appearance, not a fabricated full-balance swing.
+// See PLANNING.md "D-NWT" deferred bug and net_worth_trend.rs implementation comment.
 #[test]
-#[ignore = "deferred: mid-period account baseline — see D-NWT backlog item"]
 fn type_absent_in_earliest_month_does_not_fabricate_full_balance_swing() {
     let mk = |month: &str, ty: &str, bal: f64| monarch_mcp::net_worth_trend::AccountTypeSnapshot {
         account_type: ty.to_string(),
@@ -252,12 +250,19 @@ fn type_absent_in_earliest_month_does_not_fabricate_full_balance_swing() {
     ];
     let result = compute_trend(&snaps);
     let brokerage = result.by_account_type.get("brokerage").unwrap();
-    // The implementation reports change = 50_000 - 0 = 50_000, i.e. it claims the
-    // household's brokerage net worth "moved by +50,000" when really the account
-    // was simply opened. That fabricated swing also wins biggest_mover.
+    // Correct semantics: brokerage first appears in 2026-05; its baseline is its
+    // own first-seen balance (50_000). change = latest - first_seen = 50_000 - 50_000 = 0.
+    // The fabricated-swing bug reports 50_000 - 0 = 50_000 instead.
     assert!(
-        brokerage.change.abs() < f64::EPSILON || brokerage.change != 50_000.0,
-        "brokerage absent in earliest month should not report a +50,000 fabricated swing; got change={}",
+        brokerage.change.abs() < f64::EPSILON,
+        "brokerage absent in earliest month should report change=0 (first-seen baseline), got change={}",
         brokerage.change
+    );
+    // biggest_mover must be depository (+200), not brokerage (+0 after fix)
+    let mover = result.biggest_mover.expect("must have a biggest mover with 2 months");
+    assert_eq!(
+        mover.account_type, "depository",
+        "biggest_mover must be depository (+200), not brokerage (no real movement), got {}",
+        mover.account_type
     );
 }
