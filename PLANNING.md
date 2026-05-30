@@ -48,7 +48,7 @@ Epics: **A** (core: auth+read+goals+tidy) → **B** (forward-looking) → **C** 
 - Python + **behave** (cross-language per rule; Rust prod → Python BDD). A mock Monarch
   GraphQL (wiremock-style fixture server) backs the scenarios; behave drives the compiled
   MCP binary over stdio and asserts on tool outputs.
-- Scenarios for each Tier-1 job, tagged `@ISSUE-A5`..`@ISSUE-A8`, `@not_implemented`.
+- Scenarios for each Tier-1 job, tagged `@ISSUE-A4`..`@ISSUE-A7`, `@not_implemented`.
   Include edge/error paths: empty period, missing budget, negative net worth, auth-expired,
   partial categorization, anomaly/dupe detection.
 - Tests RUN and FAIL (RED). **Gate 1 (adversarial-qa):** scenarios unfakeable, edge cases
@@ -117,6 +117,6 @@ Own spec→plan→build cycle when reached.
 ## Tier 3 backlog (later): `investment_review`, `scenario_model`, `debt_payoff_planner`, `annual_summary`.
 
 ## Immediate next action
-A0 done. Start **A1 (BDD bootstrap)**: stand up the Python + behave harness with a mock
-Monarch GraphQL server, write `@ISSUE-A5..A8 @not_implemented` scenarios for the Tier-1 tool
-jobs, and confirm they FAIL (RED). A1 blocks all of A2–A8.
+A1 harness is RED. After the Gate 1 remediation (auth-expired, boundary, empty-state,
+negative net worth, stronger capability-denial scenarios) lands and re-confirms RED, start
+**A2 (`monarch-client`)** + **A3 (server/goals-store)**. Scenarios tagged `@ISSUE-A4..A7`.

@@ -26,5 +26,11 @@ reports/*.md
 # Local Claude settings
 .claude/settings.local.json
 
+# Disposable spike scratch (real copy lives on the spike/monarch-auth branch)
+spike-monarch-auth/
+
+# behave scratch output
+bdd/*.output
+
 # macOS
 .DS_Store
