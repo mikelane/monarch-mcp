@@ -1,0 +1,193 @@
+"""Step definitions for triage_uncategorized.feature (@ISSUE-A6)."""
+
+from __future__ import annotations
+
+import requests
+from behave import given, then, when
+
+from steps.common import call_tool
+
+
+# ---------------------------------------------------------------------------
+# Given — configure mock fixtures
+# ---------------------------------------------------------------------------
+
+
+@given('past transactions from "{merchant}" were categorized as {category}')
+def step_past_categorized(context, merchant: str, category: str):
+    """Seed transaction history so the triage engine can infer a category."""
+    history = getattr(context, "_history_transactions", [])
+    history.append(
+        {
+            "merchant": merchant,
+            "amount": 5.50,
+            "category": category,
+            "date": "2026-04-10",
+        }
+    )
+    context._history_transactions = history
+    # We fold history into the main transactions list so the server has it
+    all_txns = history + getattr(context, "_uncategorized_transactions", [])
+    requests.post(f"{context.mock_base}/configure", json={"transactions": all_txns})
+
+
+@given("a new uncategorized transaction from \"{merchant}\"")
+def step_new_uncategorized(context, merchant: str):
+    uncategorized = getattr(context, "_uncategorized_transactions", [])
+    uncategorized.append(
+        {
+            "merchant": merchant,
+            "amount": 5.50,
+            "category": "Uncategorized",
+            "date": "2026-05-20",
+        }
+    )
+    context._uncategorized_transactions = uncategorized
+    context._last_uncategorized_merchant = merchant
+    # Transactions needing review
+    requests.post(
+        f"{context.mock_base}/configure",
+        json={"transactions_needing_review": uncategorized},
+    )
+    # Merge with history in main transactions list
+    all_txns = getattr(context, "_history_transactions", []) + uncategorized
+    requests.post(f"{context.mock_base}/configure", json={"transactions": all_txns})
+
+
+@given('an uncategorized transaction from "{merchant}"')
+def step_uncategorized_only(context, merchant: str):
+    """Same as above but without historical context (no suggestion expected)."""
+    step_new_uncategorized(context, merchant)
+
+
+@given("a proposed change categorizing the \"{merchant}\" transaction as {category}")
+def step_proposed_change(context, merchant: str, category: str):
+    context._proposed_changeset = [
+        {"merchant": merchant, "category": category}
+    ]
+    # Mark the transaction as needing review
+    uncategorized = [
+        {
+            "merchant": merchant,
+            "amount": 5.50,
+            "category": "Uncategorized",
+            "date": "2026-05-20",
+            "id": "txn-1",
+        }
+    ]
+    requests.post(
+        f"{context.mock_base}/configure",
+        json={"transactions_needing_review": uncategorized, "transactions": uncategorized},
+    )
+
+
+@given("a proposed change categorizing one transaction as {category}")
+def step_proposed_change_one_transaction(context, category: str):
+    """A changeset with one change for the first transaction in the list."""
+    all_txns = getattr(context, "_all_transactions", [])
+    if all_txns:
+        txn_id = str(all_txns[0].get("id", "0"))
+        merchant = all_txns[0].get("merchant", "")
+    else:
+        txn_id = "0"
+        merchant = "Merchant 0"
+    context._proposed_changeset = [{"merchant": merchant, "category": category, "id": txn_id}]
+
+
+@given("the month has {count:d} transactions")
+def step_month_transaction_count(context, count: int):
+    txns = [
+        {
+            "merchant": f"Merchant {i}",
+            "amount": 10.0,
+            "category": "General",
+            "date": "2026-05-15",
+            "id": str(i),
+        }
+        for i in range(count)
+    ]
+    context._all_transactions = txns
+    requests.post(f"{context.mock_base}/configure", json={"transactions": txns})
+    context.expected_transaction_count = count
+
+
+# ---------------------------------------------------------------------------
+# When
+# ---------------------------------------------------------------------------
+
+
+@when("the advisor triages uncategorized transactions")
+def step_triage(context):
+    context.triage_result = call_tool(context, "triage_uncategorized")
+
+
+@when("the advisor applies the approved changeset")
+def step_apply_changeset(context):
+    changeset = getattr(context, "_proposed_changeset", [])
+    context.apply_result = call_tool(
+        context, "apply_changeset", {"changes": changeset}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Then
+# ---------------------------------------------------------------------------
+
+
+@then("the proposed change categorizes the \"{merchant}\" transaction as {category}")
+def step_assert_proposed_category(context, merchant: str, category: str):
+    result = context.triage_result
+    proposed = result.get("proposed_changes", [])
+    match = next((p for p in proposed if p.get("merchant") == merchant), None)
+    assert match is not None, (
+        f"Expected a proposed change for {merchant!r} in {proposed!r}. "
+        f"Full result: {result}"
+    )
+    assert match.get("category") == category, (
+        f"Expected category {category!r} for {merchant!r}, got {match.get('category')!r}. "
+        f"Full result: {result}"
+    )
+
+
+@then("the \"{merchant}\" transaction remains uncategorized")
+def step_assert_still_uncategorized(context, merchant: str):
+    """Triage proposes but does not apply — the mock must still show Uncategorized."""
+    import requests as req
+    resp = req.get(f"{context.mock_base}/applied_changes")
+    applied = resp.json()
+    merchant_applied = [c for c in applied if c.get("merchant") == merchant]
+    assert not merchant_applied, (
+        f"Triage should NOT have applied changes for {merchant!r}, "
+        f"but found: {merchant_applied!r}"
+    )
+
+
+@then("the \"{merchant}\" transaction is categorized as {category}")
+def step_assert_categorized(context, merchant: str, category: str):
+    resp = requests.get(f"{context.mock_base}/applied_changes")
+    applied = resp.json()
+    match = next(
+        (c for c in applied if c.get("merchant") == merchant or c.get("category") == category),
+        None,
+    )
+    assert match is not None, (
+        f"Expected {merchant!r} to be categorized as {category!r} in applied changes. "
+        f"Got: {applied!r}"
+    )
+
+
+@then("the month still has {count:d} transactions")
+def step_assert_transaction_count_unchanged(context, count: int):
+    result = context.apply_result
+    actual = result.get("transaction_count")
+    # Fallback: ask the mock for the transaction list length
+    if actual is None:
+        resp = requests.post(
+            f"{context.mock_base}/graphql",
+            json={"operationName": "GetTransactions", "variables": {}},
+        )
+        data = resp.json()
+        actual = len(data.get("data", {}).get("transactions", []))
+    assert actual == count, (
+        f"Expected {count} transactions, got {actual!r}. Full result: {result}"
+    )

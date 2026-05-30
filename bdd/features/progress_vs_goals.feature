@@ -1,0 +1,39 @@
+@ISSUE-A7 @not_implemented
+Feature: Progress versus goals
+  The tool that makes the advisor an advisor rather than a reporter. It
+  measures the household's actual finances against the goals it remembers
+  — savings rate, emergency-fund runway, debt payoff — and reports whether
+  each goal is on track, drifting, or off, so guidance is always anchored
+  to what the household is actually trying to achieve.
+
+  Background:
+    Given the budgeting advisor is connected to the household's finances
+
+  Rule: Savings-rate progress is judged against the stored goal
+
+    Scenario Outline: Savings rate is classified against the goal
+      Given the household's savings-rate goal is 20 percent
+      And the household's actual savings rate is <actual> percent
+      When the advisor reviews progress versus goals
+      Then the savings-rate goal is reported as <status>
+
+      Examples:
+        | actual | status   |
+        | 22     | on track |
+        | 17     | drifting |
+        | 6      | off      |
+
+  Rule: Emergency-fund runway is judged against the target
+
+    Scenario: Runway below the target is reported as drifting
+      Given the household's emergency-fund goal is 6 months of expenses
+      And the household's cash reserves cover 4 months of expenses
+      When the advisor reviews progress versus goals
+      Then the emergency-fund goal is reported as drifting
+
+  Rule: Progress is reported only for goals the household has set
+
+    Scenario: A goal that has not been set is not reported
+      Given the household has not set a debt-payoff goal
+      When the advisor reviews progress versus goals
+      Then no debt-payoff progress is reported

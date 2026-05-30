@@ -1,0 +1,14 @@
+[project]
+name = "monarch-mcp-bdd"
+version = "0.1.0"
+description = "BDD acceptance tests for the Monarch MCP server"
+requires-python = ">=3.11"
+dependencies = [
+    "behave>=1.2.6",
+    "flask>=3.0.0",
+    "requests>=2.31.0",
+    "tomli-w>=1.0.0",
+]
+
+[tool.uv]
+dev-dependencies = []
