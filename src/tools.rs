@@ -1,5 +1,6 @@
 //! Tool registry — registers the four compound tool names for `tools/list`.
 
+use crate::cashflow_forecast::compute_forecast;
 use crate::client::MonarchClient;
 use crate::error::MonarchError;
 use crate::financial_overview::compute_overview;
@@ -160,10 +161,25 @@ impl MonarchTools {
         &self,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Err(McpError::invalid_request(
-            "cashflow_forecast is not yet implemented (Epic B — ISSUE-B1)",
-            None,
-        ))
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_forecast(&client).await {
+            Ok(forecast) => serde_json::to_value(&forecast)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
     }
 
     #[tool(description = "Show net worth month-by-month over a requested period, broken down \
@@ -366,6 +382,27 @@ async fn fetch_and_compute_progress(
         client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
     )?;
     Ok(compute_progress(&goals, &accounts, &cashflow))
+}
+
+async fn fetch_and_compute_forecast(
+    client: &MonarchClient,
+) -> Result<crate::cashflow_forecast::ForecastResult, MonarchError> {
+    let (cur_start, cur_end) = current_month_range();
+
+    let (accounts, recurring) = tokio::try_join!(
+        client.get_accounts(),
+        client.get_recurring(&cur_start, &cur_end),
+    )?;
+
+    // Sum liquid (depository) account balances as the available cash position.
+    // Credit/loan balances are negative and would distort the projection.
+    let current_balance: f64 = accounts
+        .iter()
+        .filter(|a| a.account_type.name == "depository")
+        .map(|a| a.current_balance)
+        .sum();
+
+    Ok(compute_forecast(current_balance, &recurring))
 }
 
 async fn apply_approved_changeset(

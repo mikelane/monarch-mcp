@@ -1,4 +1,4 @@
-@ISSUE-B1 @not_implemented
+@ISSUE-B1
 Feature: Cash flow forecast
   The household needs to know whether they will end the month in the black
   before it happens, not after. This tool combines the current account

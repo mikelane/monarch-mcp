@@ -82,6 +82,16 @@ mod tests {
         }
     }
 
+    // empty bill list leaves balance unchanged
+    #[test]
+    fn no_upcoming_bills_leaves_balance_unchanged() {
+        let result = compute_forecast(2000.0, &[]);
+        assert!((result.projected_month_end_balance - 2000.0).abs() < 0.01);
+        assert!(!result.shortfall);
+        assert_eq!(result.shortfall_amount, 0.0);
+        assert!(result.shortfall_drivers.is_empty());
+    }
+
     // 9a RED → 9b GREEN: basic projection with upcoming bills reduces balance
     #[test]
     fn positive_projection_when_balance_covers_all_bills() {
