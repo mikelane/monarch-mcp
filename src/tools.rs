@@ -3,6 +3,8 @@
 use crate::client::MonarchClient;
 use crate::error::MonarchError;
 use crate::financial_overview::compute_overview;
+use crate::goals::Goals;
+use crate::progress_vs_goals::compute_progress;
 use crate::spending_report::compute_spending_report;
 use crate::triage::{build_category_suggestion_map, partition_changeset, propose_changes, ChangeEntry};
 use rmcp::{
@@ -157,10 +159,25 @@ impl MonarchTools {
         &self,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Err(McpError::internal_error(
-            "progress_vs_goals is not yet implemented (issue A7)",
-            None,
-        ))
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_progress(&client).await {
+            Ok(progress) => serde_json::to_value(&progress)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
     }
 }
 
@@ -193,6 +210,16 @@ async fn fetch_and_compute_triage(
     let uncategorized = client.get_transactions_needing_review().await?;
     let suggestion_map = build_category_suggestion_map(&all_transactions);
     Ok(propose_changes(&uncategorized, &suggestion_map))
+}
+
+async fn fetch_and_compute_progress(
+    client: &MonarchClient,
+) -> Result<crate::progress_vs_goals::GoalsProgress, MonarchError> {
+    let goals = Goals::load_from_env()
+        .map_err(|e| MonarchError::Internal(e.to_string()))?;
+    let accounts = client.get_accounts().await?;
+    let cashflow = client.get_cashflow().await?;
+    Ok(compute_progress(&goals, &accounts, &cashflow))
 }
 
 async fn apply_approved_changeset(

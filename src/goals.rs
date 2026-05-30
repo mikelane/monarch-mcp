@@ -4,6 +4,22 @@
 //! The file path comes from the `MONARCH_GOALS_FILE` environment variable.
 //! Missing goals are simply absent (not errors). A missing file or an empty
 //! file yields an empty `Goals` struct with all fields `None`.
+//!
+//! # TOML format
+//!
+//! Goals are stored as nested tables so each goal type groups its parameters:
+//!
+//! ```toml
+//! [savings_rate]
+//! target_percent = 20.0
+//!
+//! [emergency_fund]
+//! target_months = 6.0
+//!
+//! [debt_payoff]
+//! target_date = "2027-12-01"
+//! monthly_payment = 500.0   # optional
+//! ```
 
 use crate::error::MonarchError;
 use serde::Deserialize;
@@ -13,14 +29,28 @@ use std::path::Path;
 /// is simply absent and will not be reported by `progress_vs_goals`.
 #[derive(Debug, Default, Deserialize, PartialEq)]
 pub struct Goals {
-    /// Target savings rate as a percentage (0–100). E.g. `20.0` means 20 %.
-    pub savings_rate_pct: Option<f64>,
+    /// Target savings rate. Present only when the household has set one.
+    pub savings_rate: Option<SavingsRateGoal>,
 
-    /// Target emergency-fund runway in months of expenses.
-    pub emergency_fund_months: Option<f64>,
+    /// Target emergency-fund runway. Present only when the household has set one.
+    pub emergency_fund: Option<EmergencyFundGoal>,
 
     /// Optional debt-payoff goal. Present only when the household has set one.
     pub debt_payoff: Option<DebtPayoffGoal>,
+}
+
+/// A savings-rate goal expressed as a percentage (0–100).
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct SavingsRateGoal {
+    /// Target savings rate as a percentage. E.g. `20.0` means 20 %.
+    pub target_percent: f64,
+}
+
+/// An emergency-fund runway goal expressed in months of expenses.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct EmergencyFundGoal {
+    /// Target number of months of expenses to hold in reserve.
+    pub target_months: f64,
 }
 
 /// A debt-payoff goal with a target payoff date and optional monthly payment.
@@ -89,36 +119,38 @@ mod tests {
         assert_eq!(goals, Goals::default());
     }
 
-    // --- RED: savings_rate_pct is parsed ---
+    // --- RED: savings_rate goal is parsed from nested table ---
 
     #[test]
     fn savings_rate_goal_is_parsed() {
-        let f = write_goals_file("savings_rate_pct = 20.0\n");
+        let toml = "[savings_rate]\ntarget_percent = 20.0\n";
+        let f = write_goals_file(toml);
         let goals = Goals::load_from_path(f.path()).unwrap();
-        assert_eq!(goals.savings_rate_pct, Some(20.0));
-        assert_eq!(goals.emergency_fund_months, None);
-        assert_eq!(goals.debt_payoff, None);
+        assert_eq!(goals.savings_rate.unwrap().target_percent, 20.0);
+        assert!(goals.emergency_fund.is_none());
+        assert!(goals.debt_payoff.is_none());
     }
 
-    // --- TRIANGULATE: emergency_fund_months ---
+    // --- TRIANGULATE: emergency_fund goal is parsed from nested table ---
 
     #[test]
     fn emergency_fund_goal_is_parsed() {
-        let f = write_goals_file("emergency_fund_months = 6.0\n");
+        let toml = "[emergency_fund]\ntarget_months = 6.0\n";
+        let f = write_goals_file(toml);
         let goals = Goals::load_from_path(f.path()).unwrap();
-        assert_eq!(goals.emergency_fund_months, Some(6.0));
-        assert_eq!(goals.savings_rate_pct, None);
+        assert_eq!(goals.emergency_fund.unwrap().target_months, 6.0);
+        assert!(goals.savings_rate.is_none());
     }
 
     // --- TRIANGULATE: both goals together ---
 
     #[test]
     fn both_numeric_goals_are_parsed_together() {
-        let toml = "savings_rate_pct = 15.0\nemergency_fund_months = 3.0\n";
+        let toml = "[savings_rate]\ntarget_percent = 15.0\n\n[emergency_fund]\ntarget_months = 3.0\n";
         let f = write_goals_file(toml);
         let goals = Goals::load_from_path(f.path()).unwrap();
-        assert_eq!(goals.savings_rate_pct, Some(15.0));
-        assert_eq!(goals.emergency_fund_months, Some(3.0));
+        assert_eq!(goals.savings_rate.unwrap().target_percent, 15.0);
+        assert_eq!(goals.emergency_fund.unwrap().target_months, 3.0);
     }
 
     // --- RED: debt_payoff goal ---
@@ -149,7 +181,8 @@ mod tests {
 
     #[test]
     fn absent_debt_payoff_is_none() {
-        let f = write_goals_file("savings_rate_pct = 10.0\n");
+        let toml = "[savings_rate]\ntarget_percent = 10.0\n";
+        let f = write_goals_file(toml);
         let goals = Goals::load_from_path(f.path()).unwrap();
         assert!(goals.debt_payoff.is_none());
     }

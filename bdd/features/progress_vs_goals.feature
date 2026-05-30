@@ -1,4 +1,4 @@
-@ISSUE-A7 @not_implemented
+@ISSUE-A7
 Feature: Progress versus goals
   The tool that makes the advisor an advisor rather than a reporter. It
   measures the household's actual finances against the goals it remembers
