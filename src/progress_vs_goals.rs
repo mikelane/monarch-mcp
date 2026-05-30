@@ -206,7 +206,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn cashflow(income: f64, spending: f64) -> Cashflow {
-        Cashflow { income, spending, prior_month_spending: 0.0 }
+        Cashflow {
+            income,
+            spending,
+            prior_month_spending: 0.0,
+        }
     }
 
     #[test]
@@ -235,7 +239,9 @@ mod tests {
             id: "s1".to_string(),
             display_name: "Emergency Fund".to_string(),
             current_balance: balance,
-            account_type: AccountType { name: "savings".to_string() },
+            account_type: AccountType {
+                name: "savings".to_string(),
+            },
         }
     }
 
@@ -244,7 +250,9 @@ mod tests {
             id: "c1".to_string(),
             display_name: "Checking".to_string(),
             current_balance: balance,
-            account_type: AccountType { name: "checking".to_string() },
+            account_type: AccountType {
+                name: "checking".to_string(),
+            },
         }
     }
 
@@ -253,7 +261,9 @@ mod tests {
             id: "mm1".to_string(),
             display_name: "HYSA".to_string(),
             current_balance: balance,
-            account_type: AccountType { name: "money_market".to_string() },
+            account_type: AccountType {
+                name: "money_market".to_string(),
+            },
         }
     }
 
@@ -262,7 +272,9 @@ mod tests {
             id: "b1".to_string(),
             display_name: "Brokerage".to_string(),
             current_balance: balance,
-            account_type: AccountType { name: "brokerage".to_string() },
+            account_type: AccountType {
+                name: "brokerage".to_string(),
+            },
         }
     }
 
@@ -271,7 +283,9 @@ mod tests {
             id: "r1".to_string(),
             display_name: "401k".to_string(),
             current_balance: balance,
-            account_type: AccountType { name: "retirement".to_string() },
+            account_type: AccountType {
+                name: "retirement".to_string(),
+            },
         }
     }
 
@@ -359,7 +373,9 @@ mod tests {
 
     fn goals_with_savings_rate(pct: f64) -> Goals {
         Goals {
-            savings_rate: Some(SavingsRateGoal { target_percent: pct }),
+            savings_rate: Some(SavingsRateGoal {
+                target_percent: pct,
+            }),
             emergency_fund: None,
             debt_payoff: None,
         }
@@ -368,13 +384,19 @@ mod tests {
     fn goals_with_emergency_fund(months: f64) -> Goals {
         Goals {
             savings_rate: None,
-            emergency_fund: Some(EmergencyFundGoal { target_months: months }),
+            emergency_fund: Some(EmergencyFundGoal {
+                target_months: months,
+            }),
             debt_payoff: None,
         }
     }
 
     fn empty_goals() -> Goals {
-        Goals { savings_rate: None, emergency_fund: None, debt_payoff: None }
+        Goals {
+            savings_rate: None,
+            emergency_fund: None,
+            debt_payoff: None,
+        }
     }
 
     #[test]
@@ -447,7 +469,10 @@ mod tests {
         let accounts = vec![savings_account(30000.0)];
         let cf = cashflow(6000.0, 5000.0);
         let result = compute_progress(&goals, &accounts, &cf);
-        assert!(result.savings_rate.is_none(), "savings_rate should be absent when goal not set");
+        assert!(
+            result.savings_rate.is_none(),
+            "savings_rate should be absent when goal not set"
+        );
         assert!(result.emergency_fund.is_some());
     }
 }

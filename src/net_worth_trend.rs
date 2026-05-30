@@ -115,7 +115,10 @@ pub fn compute_trend(snapshots: &[AccountTypeSnapshot]) -> TrendResult {
                 .filter(|s| &s.month == m)
                 .map(|s| s.balance)
                 .sum();
-            MonthlyNetWorth { month: m.clone(), net_worth }
+            MonthlyNetWorth {
+                month: m.clone(),
+                net_worth,
+            }
         })
         .collect();
 
@@ -153,7 +156,11 @@ pub fn compute_trend(snapshots: &[AccountTypeSnapshot]) -> TrendResult {
     let first_seen_month_for = |acct_type: &str| -> &str {
         months
             .iter()
-            .find(|m| snapshots.iter().any(|s| &s.month == *m && s.account_type == acct_type))
+            .find(|m| {
+                snapshots
+                    .iter()
+                    .any(|s| &s.month == *m && s.account_type == acct_type)
+            })
             .map(|m| m.as_str())
             .unwrap_or(latest_month.as_str())
     };
@@ -191,7 +198,10 @@ pub fn compute_trend(snapshots: &[AccountTypeSnapshot]) -> TrendResult {
                     .unwrap()
                     .then_with(|| b.0.cmp(a.0))
             })
-            .map(|(t, s)| BiggestMover { account_type: t.clone(), change: s.change })
+            .map(|(t, s)| BiggestMover {
+                account_type: t.clone(),
+                change: s.change,
+            })
     } else {
         None
     };
@@ -202,7 +212,11 @@ pub fn compute_trend(snapshots: &[AccountTypeSnapshot]) -> TrendResult {
         .filter(|s| &s.month == latest_month)
         .collect();
 
-    let total_assets: f64 = latest_rows.iter().filter(|s| s.balance > 0.0).map(|s| s.balance).sum();
+    let total_assets: f64 = latest_rows
+        .iter()
+        .filter(|s| s.balance > 0.0)
+        .map(|s| s.balance)
+        .sum();
     let total_liabilities: f64 = latest_rows
         .iter()
         .filter(|s| s.balance < 0.0)
@@ -340,8 +354,15 @@ mod tests {
             snap("2026-05", "credit", -7_000.0),
         ];
         let result = compute_trend(&snapshots);
-        let credit = result.by_account_type.get("credit").expect("credit must be present");
-        assert!((credit.change - 3_000.0).abs() < 0.01, "got {}", credit.change);
+        let credit = result
+            .by_account_type
+            .get("credit")
+            .expect("credit must be present");
+        assert!(
+            (credit.change - 3_000.0).abs() < 0.01,
+            "got {}",
+            credit.change
+        );
     }
 
     // 9a RED: asset/liability split from latest month
@@ -368,9 +389,15 @@ mod tests {
             snap("2026-05", "brokerage", 45_000.0),
         ];
         let result = compute_trend(&snapshots);
-        let brokerage = result.by_account_type.get("brokerage").expect("brokerage must be present");
+        let brokerage = result
+            .by_account_type
+            .get("brokerage")
+            .expect("brokerage must be present");
         assert!((brokerage.change - 5_000.0).abs() < 0.01);
-        let depository = result.by_account_type.get("depository").expect("depository must be present");
+        let depository = result
+            .by_account_type
+            .get("depository")
+            .expect("depository must be present");
         assert!((depository.change - 200.0).abs() < 0.01);
     }
 

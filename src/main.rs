@@ -19,11 +19,11 @@ mod net_worth_trend;
 mod progress_vs_goals;
 mod recurring_scan;
 mod spending_report;
-mod triage;
 mod tools;
+mod triage;
 
 use anyhow::Result;
-use rmcp::{ServiceExt, transport::stdio};
+use rmcp::{transport::stdio, ServiceExt};
 use tools::MonarchTools;
 
 #[tokio::main(flavor = "multi_thread")]
@@ -58,9 +58,7 @@ async fn run_login() -> Result<()> {
     use client::MonarchClient;
     use std::io::{self, Write};
 
-    let base = std::env::var("MONARCH_BASE")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
 
     let mut monarch = MonarchClient::new(base);
 
@@ -87,7 +85,9 @@ async fn run_login() -> Result<()> {
             io::stdin().read_line(&mut totp)?;
             let totp = totp.trim().to_string();
 
-            let token = monarch.login_totp(&email, &password, &totp).await
+            let token = monarch
+                .login_totp(&email, &password, &totp)
+                .await
                 .map_err(|e| anyhow::anyhow!("Login failed: {e}"))?;
             eprintln!("Authenticated (MFA). Token length: {}", token.len());
             eprintln!("Session saved to ~/.config/monarch-mcp/session.json");

@@ -108,24 +108,20 @@ mod tests {
     // 9c TRIANGULATE: shortfall when bills exceed balance
     #[test]
     fn shortfall_flagged_when_upcoming_bills_exceed_balance() {
-        let items = vec![
-            bill("Rent", 1500.0),
-            bill("Subscription", 15.0),
-        ];
+        let items = vec![bill("Rent", 1500.0), bill("Subscription", 15.0)];
         let result = compute_forecast(500.0, &items);
         assert!(result.shortfall, "expected shortfall flag");
         assert!((result.shortfall_amount - 1015.0).abs() < 0.01);
         assert!(result.shortfall_drivers.contains(&"Rent".to_string()));
-        assert!(result.shortfall_drivers.contains(&"Subscription".to_string()));
+        assert!(result
+            .shortfall_drivers
+            .contains(&"Subscription".to_string()));
     }
 
     // 9c TRIANGULATE: past items excluded from projection
     #[test]
     fn past_recurring_items_are_excluded_from_projection() {
-        let items = vec![
-            past_bill("Rent", 1200.0),
-            bill("Electric", 100.0),
-        ];
+        let items = vec![past_bill("Rent", 1200.0), bill("Electric", 100.0)];
         let result = compute_forecast(1800.0, &items);
         assert!((result.projected_month_end_balance - 1700.0).abs() < 0.01);
         assert!(!result.shortfall);

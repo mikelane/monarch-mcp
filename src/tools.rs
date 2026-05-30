@@ -4,20 +4,21 @@ use crate::cashflow_forecast::compute_forecast;
 use crate::client::MonarchClient;
 use crate::error::MonarchError;
 use crate::financial_overview::compute_overview;
-use crate::net_worth_trend::compute_trend;
 use crate::goals::Goals;
+use crate::net_worth_trend::compute_trend;
 use crate::progress_vs_goals::compute_progress;
 use crate::recurring_scan::compute_scan;
 use crate::spending_report::compute_spending_report;
-use crate::triage::{build_category_suggestion_map, parse_raw_changes, partition_changeset, propose_changes};
+use crate::triage::{
+    build_category_suggestion_map, parse_raw_changes, partition_changeset, propose_changes,
+};
+use rmcp::schemars;
 use rmcp::{
-    ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
     service::RequestContext,
-    tool, tool_router,
+    tool, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
 };
-use rmcp::schemars;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -50,9 +51,11 @@ impl MonarchTools {
         }
     }
 
-    #[tool(description = "Return a snapshot of the household's current financial position: \
+    #[tool(
+        description = "Return a snapshot of the household's current financial position: \
         net worth, month-over-month change, this-month cash flow (income/spending/net), \
-        and balances by account type. Start every advising session here.")]
+        and balances by account type. Start every advising session here."
+    )]
     async fn financial_overview(
         &self,
         _ctx: RequestContext<RoleServer>,
@@ -78,8 +81,10 @@ impl MonarchTools {
         )]))
     }
 
-    #[tool(description = "Break down spending for a period by category, compare against \
-        budget and the prior period, surface anomalies and over-budget flags.")]
+    #[tool(
+        description = "Break down spending for a period by category, compare against \
+        budget and the prior period, surface anomalies and over-budget flags."
+    )]
     async fn spending_report(
         &self,
         _ctx: RequestContext<RoleServer>,
@@ -105,9 +110,11 @@ impl MonarchTools {
         )]))
     }
 
-    #[tool(description = "Identify uncategorized transactions and suggest category/tags/notes \
+    #[tool(
+        description = "Identify uncategorized transactions and suggest category/tags/notes \
         based on the household's own history. Returns a proposed changeset for review — \
-        nothing is written until apply_changeset is called.")]
+        nothing is written until apply_changeset is called."
+    )]
     async fn triage_uncategorized(
         &self,
         _ctx: RequestContext<RoleServer>,
@@ -133,10 +140,12 @@ impl MonarchTools {
         )]))
     }
 
-    #[tool(description = "Apply an approved changeset, updating only category, tags, and notes. \
+    #[tool(
+        description = "Apply an approved changeset, updating only category, tags, and notes. \
         Any other field (amount, account, merchant, date, or unknown fields) is forbidden — \
         entries containing them are rejected and reported back with the original transaction id. \
-        The set of transaction ids is never altered.")]
+        The set of transaction ids is never altered."
+    )]
     async fn apply_changeset(
         &self,
         _ctx: RequestContext<RoleServer>,
@@ -163,9 +172,11 @@ impl MonarchTools {
         )]))
     }
 
-    #[tool(description = "Project the household's month-end cash position from current account \
+    #[tool(
+        description = "Project the household's month-end cash position from current account \
         balances, income and spending so far this period, and scheduled recurring charges. \
-        Flags a shortfall when upcoming bills are on track to exceed available funds.")]
+        Flags a shortfall when upcoming bills are on track to exceed available funds."
+    )]
     async fn cashflow_forecast(
         &self,
         _ctx: RequestContext<RoleServer>,
@@ -191,9 +202,11 @@ impl MonarchTools {
         )]))
     }
 
-    #[tool(description = "Show net worth month-by-month over a requested period, broken down \
+    #[tool(
+        description = "Show net worth month-by-month over a requested period, broken down \
         by account type (depository, brokerage, credit, loan, etc.), with the biggest \
-        single mover and a total assets-versus-liabilities split.")]
+        single mover and a total assets-versus-liabilities split."
+    )]
     async fn net_worth_trend(
         &self,
         _ctx: RequestContext<RoleServer>,
@@ -220,9 +233,11 @@ impl MonarchTools {
         )]))
     }
 
-    #[tool(description = "Scan recurring charges for amount drift ('creeping' subscriptions \
+    #[tool(
+        description = "Scan recurring charges for amount drift ('creeping' subscriptions \
         whose price has quietly changed) and list upcoming renewals due this period. \
-        Stable subscriptions are reported but not flagged.")]
+        Stable subscriptions are reported but not flagged."
+    )]
     async fn recurring_scan(
         &self,
         _ctx: RequestContext<RoleServer>,
@@ -248,9 +263,11 @@ impl MonarchTools {
         )]))
     }
 
-    #[tool(description = "Measure actual finances against the household's remembered goals \
+    #[tool(
+        description = "Measure actual finances against the household's remembered goals \
         (savings rate, emergency-fund runway, debt payoff). Reports each goal as \
-        on-track, drifting, or off, with the lever to pull.")]
+        on-track, drifting, or off, with the lever to pull."
+    )]
     async fn progress_vs_goals(
         &self,
         _ctx: RequestContext<RoleServer>,
@@ -412,8 +429,7 @@ async fn fetch_and_compute_triage(
 async fn fetch_and_compute_progress(
     client: &MonarchClient,
 ) -> Result<crate::progress_vs_goals::GoalsProgress, MonarchError> {
-    let goals = Goals::load_from_env()
-        .map_err(|e| MonarchError::Internal(e.to_string()))?;
+    let goals = Goals::load_from_env().map_err(|e| MonarchError::Internal(e.to_string()))?;
     let (cur_start, cur_end) = current_month_range();
     let (pri_start, pri_end) = prior_month_range();
 
@@ -534,16 +550,17 @@ async fn apply_approved_changeset(
 #[rmcp::tool_handler]
 impl ServerHandler for MonarchTools {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder().enable_tools().build(),
-        )
-        .with_server_info(Implementation::new("monarch-mcp", env!("CARGO_PKG_VERSION")))
-        .with_protocol_version(ProtocolVersion::V_2024_11_05)
-        .with_instructions(
-            "Monarch Money budgeting advisor. Tools: financial_overview, \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                "monarch-mcp",
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_instructions(
+                "Monarch Money budgeting advisor. Tools: financial_overview, \
              spending_report, triage_uncategorized, progress_vs_goals, \
              cashflow_forecast, net_worth_trend, recurring_scan."
-                .to_string(),
-        )
+                    .to_string(),
+            )
     }
 }

@@ -26,7 +26,10 @@ fn authed_client(base: &str) -> (MonarchClient, tempfile::TempDir) {
 
     let mut client = MonarchClient::with_session_path(Some(base.to_string()), session_path);
     client.resolve_token_from_env_or_disk();
-    assert!(client.token().is_some(), "client should be authenticated for test");
+    assert!(
+        client.token().is_some(),
+        "client should be authenticated for test"
+    );
     (client, tmp)
 }
 
@@ -73,14 +76,20 @@ async fn recurring_scan_null_amount_diff_does_not_break_the_call() {
         .await;
 
     let (client, _tmp) = authed_client(&server.uri());
-    let result = client.get_recurring_for_scan("2026-05-01", "2026-05-31").await;
+    let result = client
+        .get_recurring_for_scan("2026-05-01", "2026-05-31")
+        .await;
     assert!(
         result.is_ok(),
         "null amountDiff must not break the scan — real Monarch sends null for new streams; got: {:?}",
         result.err()
     );
     let items = result.unwrap();
-    assert_eq!(items.len(), 1, "the single recurring item should still be returned");
+    assert_eq!(
+        items.len(),
+        1,
+        "the single recurring item should still be returned"
+    );
     // A null diff means "unknown / no change measurable" — must NOT be treated
     // as a creeping charge.
     assert!(
@@ -131,7 +140,9 @@ async fn recurring_scan_null_merchant_does_not_break_the_call() {
         .await;
 
     let (client, _tmp) = authed_client(&server.uri());
-    let result = client.get_recurring_for_scan("2026-05-01", "2026-05-31").await;
+    let result = client
+        .get_recurring_for_scan("2026-05-01", "2026-05-31")
+        .await;
     assert!(
         result.is_ok(),
         "null merchant must not break the scan; got: {:?}",
@@ -259,7 +270,9 @@ fn type_absent_in_earliest_month_does_not_fabricate_full_balance_swing() {
         brokerage.change
     );
     // biggest_mover must be depository (+200), not brokerage (+0 after fix)
-    let mover = result.biggest_mover.expect("must have a biggest mover with 2 months");
+    let mover = result
+        .biggest_mover
+        .expect("must have a biggest mover with 2 months");
     assert_eq!(
         mover.account_type, "depository",
         "biggest_mover must be depository (+200), not brokerage (no real movement), got {}",

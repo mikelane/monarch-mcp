@@ -56,7 +56,10 @@ fn current_month() -> (String, String) {
     let days = (now / 86_400) as i64;
     let (y, m, _) = days_to_ymd(days);
     let last = days_in_month(y, m);
-    (format!("{y:04}-{m:02}-01"), format!("{y:04}-{m:02}-{last:02}"))
+    (
+        format!("{y:04}-{m:02}-01"),
+        format!("{y:04}-{m:02}-{last:02}"),
+    )
 }
 
 fn prior_month() -> (String, String) {
@@ -73,7 +76,10 @@ fn prior_month() -> (String, String) {
         m -= 1;
     }
     let last = days_in_month(y, m);
-    (format!("{y:04}-{m:02}-01"), format!("{y:04}-{m:02}-{last:02}"))
+    (
+        format!("{y:04}-{m:02}-01"),
+        format!("{y:04}-{m:02}-{last:02}"),
+    )
 }
 
 fn days_to_ymd(days: i64) -> (i64, u32, u32) {
@@ -146,7 +152,10 @@ async fn financial_overview_returns_real_net_worth() {
         .get_net_worth_history(&pri_start, &pri_end)
         .await
         .expect("GetAggregateSnapshots must succeed against real Monarch");
-    eprintln!("prior_month_net_worth: {:.2}", history.prior_month_net_worth);
+    eprintln!(
+        "prior_month_net_worth: {:.2}",
+        history.prior_month_net_worth
+    );
 
     let overview = compute_overview(&accounts, &cashflow, &history);
     eprintln!("net_worth: {:.2}", overview.net_worth);
@@ -159,8 +168,7 @@ async fn financial_overview_returns_real_net_worth() {
         overview.net_worth
     );
     assert_ne!(
-        overview.net_worth,
-        0.0,
+        overview.net_worth, 0.0,
         "net_worth must not be exactly zero for a real account"
     );
 }
@@ -185,7 +193,12 @@ async fn transactions_return_valid_structure_from_real_monarch() {
     eprintln!("transactions this month: {}", txns.len());
     for t in &txns {
         assert!(!t.id.is_empty(), "transaction id must not be empty");
-        assert!(t.amount.is_finite(), "amount must be finite, got {} for id {}", t.amount, t.id);
+        assert!(
+            t.amount.is_finite(),
+            "amount must be finite, got {} for id {}",
+            t.amount,
+            t.id
+        );
         assert!(!t.date.is_empty(), "date must not be empty for id {}", t.id);
     }
 }
@@ -209,7 +222,11 @@ async fn categories_return_valid_structure_from_real_monarch() {
     assert!(!cats.is_empty(), "must have at least one category");
     for c in &cats {
         assert!(!c.id.is_empty(), "category id must not be empty");
-        assert!(!c.name.is_empty(), "category name must not be empty for id {}", c.id);
+        assert!(
+            !c.name.is_empty(),
+            "category name must not be empty for id {}",
+            c.id
+        );
     }
 }
 
@@ -231,7 +248,11 @@ async fn tags_return_valid_structure_from_real_monarch() {
     eprintln!("tags: {}", tags.len());
     for t in &tags {
         assert!(!t.id.is_empty(), "tag id must not be empty");
-        assert!(!t.name.is_empty(), "tag name must not be empty for id {}", t.id);
+        assert!(
+            !t.name.is_empty(),
+            "tag name must not be empty for id {}",
+            t.id
+        );
     }
 }
 
@@ -368,10 +389,7 @@ async fn recurring_scan_returns_valid_structure_from_real_monarch() {
     eprintln!("recurring items returned: {}", items.len());
 
     for item in &items {
-        assert!(
-            !item.merchant.is_empty(),
-            "merchant name must not be empty"
-        );
+        assert!(!item.merchant.is_empty(), "merchant name must not be empty");
         assert!(
             item.stream_amount.is_finite(),
             "stream_amount must be finite for {:?}",

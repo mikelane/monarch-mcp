@@ -163,7 +163,8 @@ fn find_over_budget_categories(category_reports: &HashMap<String, CategoryReport
 fn find_possible_duplicates(transactions: &[Transaction]) -> Vec<DuplicateCharge> {
     let mut seen: HashMap<(&str, i64, &str), usize> = HashMap::new();
     let mut duplicates: Vec<DuplicateCharge> = Vec::new();
-    let mut already_flagged: std::collections::HashSet<(&str, i64, &str)> = std::collections::HashSet::new();
+    let mut already_flagged: std::collections::HashSet<(&str, i64, &str)> =
+        std::collections::HashSet::new();
 
     for txn in transactions {
         // Use integer representation of amount (cents) to avoid float key issues
@@ -237,7 +238,9 @@ mod tests {
         let budgets = vec![make_budget("Dining", 600.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
-            report.over_budget_categories.contains(&"Dining".to_string()),
+            report
+                .over_budget_categories
+                .contains(&"Dining".to_string()),
             "expected Dining in over_budget_categories: {:?}",
             report.over_budget_categories
         );
@@ -249,11 +252,18 @@ mod tests {
 
     #[test]
     fn category_exactly_at_budget_is_not_flagged() {
-        let txns = vec![make_txn("Groceries merchant", 900.0, "Groceries", "2026-05-15")];
+        let txns = vec![make_txn(
+            "Groceries merchant",
+            900.0,
+            "Groceries",
+            "2026-05-15",
+        )];
         let budgets = vec![make_budget("Groceries", 900.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
-            !report.over_budget_categories.contains(&"Groceries".to_string()),
+            !report
+                .over_budget_categories
+                .contains(&"Groceries".to_string()),
             "Groceries at 100% should not be flagged: {:?}",
             report.over_budget_categories
         );
@@ -261,11 +271,18 @@ mod tests {
 
     #[test]
     fn category_under_budget_is_not_flagged() {
-        let txns = vec![make_txn("Groceries merchant", 720.0, "Groceries", "2026-05-15")];
+        let txns = vec![make_txn(
+            "Groceries merchant",
+            720.0,
+            "Groceries",
+            "2026-05-15",
+        )];
         let budgets = vec![make_budget("Groceries", 900.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
-            !report.over_budget_categories.contains(&"Groceries".to_string()),
+            !report
+                .over_budget_categories
+                .contains(&"Groceries".to_string()),
             "Groceries under budget should not be flagged"
         );
     }
@@ -283,11 +300,15 @@ mod tests {
         let budgets = vec![make_budget("Dining", 600.0), make_budget("Shopping", 400.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
-            report.over_budget_categories.contains(&"Dining".to_string()),
+            report
+                .over_budget_categories
+                .contains(&"Dining".to_string()),
             "Dining should be over budget"
         );
         assert!(
-            report.over_budget_categories.contains(&"Shopping".to_string()),
+            report
+                .over_budget_categories
+                .contains(&"Shopping".to_string()),
             "Shopping should be over budget"
         );
     }
@@ -334,7 +355,9 @@ mod tests {
         let txns = vec![make_txn("Travel merchant", 300.0, "Travel", "2026-05-15")];
         let report = compute_spending_report(&txns, &[], &zero_cashflow());
         assert!(
-            !report.over_budget_categories.contains(&"Travel".to_string()),
+            !report
+                .over_budget_categories
+                .contains(&"Travel".to_string()),
             "unbudgeted Travel should not be flagged"
         );
         let cat = report.by_category.get("Travel").unwrap();
@@ -461,19 +484,23 @@ mod tests {
         let budgets = vec![make_budget("Streaming", 0.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
 
-        let cat = report.by_category.get("Streaming").expect("Streaming category must exist");
+        let cat = report
+            .by_category
+            .get("Streaming")
+            .expect("Streaming category must exist");
         assert_ne!(
             cat.percent_of_budget,
             Some(i64::MAX),
             "zero budget with spend must not produce i64::MAX percent"
         );
         assert_eq!(
-            cat.percent_of_budget,
-            None,
+            cat.percent_of_budget, None,
             "zero budget should yield no percent (division by zero)"
         );
         assert!(
-            report.over_budget_categories.contains(&"Streaming".to_string()),
+            report
+                .over_budget_categories
+                .contains(&"Streaming".to_string()),
             "spending on a $0-budget category must still be classified over budget"
         );
     }
@@ -493,7 +520,9 @@ mod tests {
         let budgets = vec![make_budget("Loan Repayment", -1280.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
-            !report.over_budget_categories.contains(&"Loan Repayment".to_string()),
+            !report
+                .over_budget_categories
+                .contains(&"Loan Repayment".to_string()),
             "spending 1000 against a -1280 budget should NOT be over budget (1000 < 1280)"
         );
     }
@@ -505,7 +534,9 @@ mod tests {
         let budgets = vec![make_budget("Loan Repayment", -1280.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
-            report.over_budget_categories.contains(&"Loan Repayment".to_string()),
+            report
+                .over_budget_categories
+                .contains(&"Loan Repayment".to_string()),
             "spending 1400 against a -1280 budget SHOULD be over budget (1400 > 1280)"
         );
     }
@@ -523,7 +554,9 @@ mod tests {
         let budgets = vec![make_budget("Loan Repayment", -1280.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
-            !report.over_budget_categories.contains(&"Loan Repayment".to_string()),
+            !report
+                .over_budget_categories
+                .contains(&"Loan Repayment".to_string()),
             "spending exactly 1280 against a -1280 budget should NOT be over budget"
         );
         let cat = report.by_category.get("Loan Repayment").unwrap();
@@ -537,7 +570,9 @@ mod tests {
         let budgets = vec![make_budget("Loan Repayment", -1280.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
-            !report.over_budget_categories.contains(&"Loan Repayment".to_string()),
+            !report
+                .over_budget_categories
+                .contains(&"Loan Repayment".to_string()),
             "zero spend against a negative budget should not be over budget"
         );
     }
@@ -549,14 +584,18 @@ mod tests {
         let budgets = vec![make_budget("Streaming", 0.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
 
-        let cat = report.by_category.get("Streaming").expect("Streaming category must exist");
+        let cat = report
+            .by_category
+            .get("Streaming")
+            .expect("Streaming category must exist");
         assert_eq!(
-            cat.percent_of_budget,
-            None,
+            cat.percent_of_budget, None,
             "zero budget with zero spend should yield None percent (0/0 = NaN, not 0)"
         );
         assert!(
-            !report.over_budget_categories.contains(&"Streaming".to_string()),
+            !report
+                .over_budget_categories
+                .contains(&"Streaming".to_string()),
             "zero spend on $0-budget category is not over budget"
         );
     }

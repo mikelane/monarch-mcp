@@ -103,11 +103,13 @@ pub fn propose_changes(
     let proposed_changes = uncategorized
         .iter()
         .filter_map(|txn| {
-            suggestion_map.get(&txn.merchant_name).map(|category| ProposedChange {
-                id: txn.id.clone(),
-                merchant: txn.merchant_name.clone(),
-                category: category.clone(),
-            })
+            suggestion_map
+                .get(&txn.merchant_name)
+                .map(|category| ProposedChange {
+                    id: txn.id.clone(),
+                    merchant: txn.merchant_name.clone(),
+                    category: category.clone(),
+                })
         })
         .collect();
     TriageResult { proposed_changes }
@@ -132,9 +134,7 @@ pub fn parse_raw_changes(raw: Vec<serde_json::Value>) -> Vec<ParsedEntry> {
         .map(|v| {
             // Extract the id independently so we can name the entry in rejections
             // even when the full parse fails.
-            let id = v.get("id")
-                .and_then(|id| id.as_str())
-                .map(str::to_string);
+            let id = v.get("id").and_then(|id| id.as_str()).map(str::to_string);
 
             match serde_json::from_value::<ChangeEntry>(v) {
                 Ok(entry) => ParsedEntry::Ok(entry),
@@ -159,10 +159,7 @@ pub enum ParsedEntry {
 /// Valid entries pass through `validate_change_entry` for any remaining
 /// business-rule checks. The `total_transaction_count` is threaded through
 /// so callers can assert the id-set is unchanged.
-pub fn partition_changeset(
-    entries: &[ParsedEntry],
-    total_transaction_count: usize,
-) -> ApplyResult {
+pub fn partition_changeset(entries: &[ParsedEntry], total_transaction_count: usize) -> ApplyResult {
     let mut applied_changes = Vec::new();
     let mut rejected_changes = Vec::new();
 
@@ -334,7 +331,10 @@ mod tests {
         let raw = serde_json::json!({"id": "t1", "amount": 0.0});
         let entries = parse_raw_changes(vec![raw]);
         let result = partition_changeset(&entries, 1);
-        assert!(!result.rejected_changes.is_empty(), "amount=0 must still be rejected");
+        assert!(
+            !result.rejected_changes.is_empty(),
+            "amount=0 must still be rejected"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -390,9 +390,20 @@ mod tests {
             "id": "t-acct", "category": "Coffee", "account": "other-account-id"
         });
         let result = parse_and_partition_single(raw, 1);
-        assert_eq!(result.applied_changes.len(), 0, "account field must be rejected, not applied");
-        assert_eq!(result.rejected_changes.len(), 1, "must have one rejected entry");
-        assert_eq!(result.rejected_changes[0].id, "t-acct", "real id must be preserved in rejection");
+        assert_eq!(
+            result.applied_changes.len(),
+            0,
+            "account field must be rejected, not applied"
+        );
+        assert_eq!(
+            result.rejected_changes.len(),
+            1,
+            "must have one rejected entry"
+        );
+        assert_eq!(
+            result.rejected_changes[0].id, "t-acct",
+            "real id must be preserved in rejection"
+        );
     }
 
     #[test]
@@ -401,8 +412,15 @@ mod tests {
             "id": "t-date", "category": "Dining", "date": "2099-01-01"
         });
         let result = parse_and_partition_single(raw, 1);
-        assert_eq!(result.applied_changes.len(), 0, "date field must be rejected");
-        assert_eq!(result.rejected_changes[0].id, "t-date", "real id must be preserved");
+        assert_eq!(
+            result.applied_changes.len(),
+            0,
+            "date field must be rejected"
+        );
+        assert_eq!(
+            result.rejected_changes[0].id, "t-date",
+            "real id must be preserved"
+        );
     }
 
     // BUG 2b RED: amount as string must be rejected with real id, not swallowed
@@ -414,12 +432,19 @@ mod tests {
             "id": "t-stramt", "amount": "100.00"
         });
         let result = parse_and_partition_single(raw, 1);
-        assert_eq!(result.applied_changes.len(), 0,
-            "amount-as-string must not appear in applied_changes");
-        assert!(!result.rejected_changes.is_empty(),
-            "amount-as-string entry must appear in rejected_changes");
-        assert_eq!(result.rejected_changes[0].id, "t-stramt",
-            "real transaction id must be preserved, not 'unknown'");
+        assert_eq!(
+            result.applied_changes.len(),
+            0,
+            "amount-as-string must not appear in applied_changes"
+        );
+        assert!(
+            !result.rejected_changes.is_empty(),
+            "amount-as-string entry must appear in rejected_changes"
+        );
+        assert_eq!(
+            result.rejected_changes[0].id, "t-stramt",
+            "real transaction id must be preserved, not 'unknown'"
+        );
     }
 
     #[test]
@@ -431,8 +456,11 @@ mod tests {
         });
         let result = parse_and_partition_single(raw, 1);
         let has_unknown_applied = result.applied_changes.iter().any(|a| a.id == "unknown");
-        assert!(!has_unknown_applied,
-            "id 'unknown' must never appear in applied_changes; got: {:?}", result.applied_changes);
+        assert!(
+            !has_unknown_applied,
+            "id 'unknown' must never appear in applied_changes; got: {:?}",
+            result.applied_changes
+        );
     }
 
     // BUG 2c RED: malformed-but-legitimate entry must NOT be silently dropped
@@ -447,15 +475,19 @@ mod tests {
         // Either: parsed OK (tags ignored/coerced) with real id applied, OR
         // rejected with real id. What must NOT happen: id "unknown" in applied.
         let unknown_applied = result.applied_changes.iter().any(|a| a.id == "unknown");
-        assert!(!unknown_applied,
+        assert!(
+            !unknown_applied,
             "malformed entry must not produce id 'unknown' in applied_changes; got: {:?}",
-            result.applied_changes);
+            result.applied_changes
+        );
         // The real id must be traceable (either applied with correct id or rejected with real id)
         let real_id_present = result.applied_changes.iter().any(|a| a.id == "t-tags")
             || result.rejected_changes.iter().any(|r| r.id == "t-tags");
-        assert!(real_id_present,
+        assert!(
+            real_id_present,
             "real id 't-tags' must appear somewhere in result; applied={:?} rejected={:?}",
-            result.applied_changes, result.rejected_changes);
+            result.applied_changes, result.rejected_changes
+        );
     }
 
     /// Helper: parse a single raw JSON value through the full parse+partition path

@@ -13,5 +13,5 @@ pub mod net_worth_trend;
 pub mod progress_vs_goals;
 pub mod recurring_scan;
 pub mod spending_report;
-pub mod triage;
 pub mod tools;
+pub mod triage;

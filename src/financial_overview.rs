@@ -84,19 +84,25 @@ mod tests {
     }
 
     fn zero_cashflow() -> Cashflow {
-        Cashflow { income: 0.0, spending: 0.0, prior_month_spending: 0.0 }
+        Cashflow {
+            income: 0.0,
+            spending: 0.0,
+            prior_month_spending: 0.0,
+        }
     }
 
     fn zero_history() -> NetWorthHistory {
-        NetWorthHistory { prior_month_net_worth: 0.0 }
+        NetWorthHistory {
+            prior_month_net_worth: 0.0,
+        }
     }
 
     // 9a RED: assets minus liabilities gives correct net worth
     #[test]
     fn net_worth_is_assets_minus_liabilities() {
         let accounts = vec![
-            account(100_000.0),  // asset
-            account(-30_000.0),  // liability (credit card stores as negative)
+            account(100_000.0), // asset
+            account(-30_000.0), // liability (credit card stores as negative)
         ];
         let result = compute_overview(&accounts, &zero_cashflow(), &zero_history());
         assert_eq!(result.net_worth, 70_000.0);
@@ -105,10 +111,7 @@ mod tests {
     // 9c TRIANGULATE: liabilities exceed assets → negative net worth
     #[test]
     fn net_worth_is_negative_when_liabilities_exceed_assets() {
-        let accounts = vec![
-            account(10_000.0),
-            account(-30_000.0),
-        ];
+        let accounts = vec![account(10_000.0), account(-30_000.0)];
         let result = compute_overview(&accounts, &zero_cashflow(), &zero_history());
         assert_eq!(result.net_worth, -20_000.0);
     }
@@ -123,7 +126,11 @@ mod tests {
     // 9a RED: cashflow net = income − spending
     #[test]
     fn cashflow_net_is_income_minus_spending() {
-        let cashflow = Cashflow { income: 8_000.0, spending: 6_500.0, prior_month_spending: 0.0 };
+        let cashflow = Cashflow {
+            income: 8_000.0,
+            spending: 6_500.0,
+            prior_month_spending: 0.0,
+        };
         let result = compute_overview(&[], &cashflow, &zero_history());
         assert_eq!(result.cashflow.income, 8_000.0);
         assert_eq!(result.cashflow.spending, 6_500.0);
@@ -141,7 +148,9 @@ mod tests {
     #[test]
     fn net_worth_change_is_positive_when_worth_grew() {
         let accounts = vec![account(70_000.0)];
-        let history = NetWorthHistory { prior_month_net_worth: 68_000.0 };
+        let history = NetWorthHistory {
+            prior_month_net_worth: 68_000.0,
+        };
         let result = compute_overview(&accounts, &zero_cashflow(), &history);
         assert_eq!(result.net_worth_change, 2_000.0);
     }
@@ -150,7 +159,9 @@ mod tests {
     #[test]
     fn net_worth_change_is_negative_when_worth_shrank() {
         let accounts = vec![account(60_000.0)];
-        let history = NetWorthHistory { prior_month_net_worth: 68_000.0 };
+        let history = NetWorthHistory {
+            prior_month_net_worth: 68_000.0,
+        };
         let result = compute_overview(&accounts, &zero_cashflow(), &history);
         assert_eq!(result.net_worth_change, -8_000.0);
     }
@@ -159,7 +170,9 @@ mod tests {
     #[test]
     fn net_worth_change_is_zero_when_unchanged() {
         let accounts = vec![account(50_000.0)];
-        let history = NetWorthHistory { prior_month_net_worth: 50_000.0 };
+        let history = NetWorthHistory {
+            prior_month_net_worth: 50_000.0,
+        };
         let result = compute_overview(&accounts, &zero_cashflow(), &history);
         assert_eq!(result.net_worth_change, 0.0);
     }

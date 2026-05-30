@@ -100,7 +100,10 @@ pub fn compute_scan(items: &[RecurringScanItem]) -> ScanResult {
         })
         .collect();
 
-    ScanResult { creeping_charges, upcoming_renewals }
+    ScanResult {
+        creeping_charges,
+        upcoming_renewals,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,9 +136,15 @@ mod tests {
     fn price_increase_is_flagged_as_creeping() {
         let items = vec![item("StreamingCo", 9.99, 13.99, false, false)];
         let result = compute_scan(&items);
-        let names: Vec<&str> =
-            result.creeping_charges.iter().map(|c| c.merchant.as_str()).collect();
-        assert!(names.contains(&"StreamingCo"), "expected StreamingCo in creeping_charges");
+        let names: Vec<&str> = result
+            .creeping_charges
+            .iter()
+            .map(|c| c.merchant.as_str())
+            .collect();
+        assert!(
+            names.contains(&"StreamingCo"),
+            "expected StreamingCo in creeping_charges"
+        );
     }
 
     // 9b GREEN extension: amount_change is correct (positive for increase)
@@ -160,9 +169,15 @@ mod tests {
     fn price_decrease_is_flagged_as_creeping() {
         let items = vec![item("MusicService", 10.99, 7.99, false, false)];
         let result = compute_scan(&items);
-        let names: Vec<&str> =
-            result.creeping_charges.iter().map(|c| c.merchant.as_str()).collect();
-        assert!(names.contains(&"MusicService"), "expected MusicService in creeping_charges");
+        let names: Vec<&str> = result
+            .creeping_charges
+            .iter()
+            .map(|c| c.merchant.as_str())
+            .collect();
+        assert!(
+            names.contains(&"MusicService"),
+            "expected MusicService in creeping_charges"
+        );
     }
 
     // 9c TRIANGULATE: amount_change for decrease has correct absolute magnitude
@@ -187,8 +202,11 @@ mod tests {
     fn approximate_charge_is_not_flagged_as_creeping() {
         let items = vec![item("ElectricUtil", 120.0, 134.50, true, false)];
         let result = compute_scan(&items);
-        let names: Vec<&str> =
-            result.creeping_charges.iter().map(|c| c.merchant.as_str()).collect();
+        let names: Vec<&str> = result
+            .creeping_charges
+            .iter()
+            .map(|c| c.merchant.as_str())
+            .collect();
         assert!(
             !names.contains(&"ElectricUtil"),
             "ElectricUtil must NOT be in creeping_charges"
@@ -218,25 +236,43 @@ mod tests {
             item("GymMembership", 50.0, 50.0, false, false),
         ];
         let result = compute_scan(&items);
-        let names: Vec<&str> =
-            result.creeping_charges.iter().map(|c| c.merchant.as_str()).collect();
-        assert!(names.contains(&"StreamingCo"), "StreamingCo must be flagged");
-        assert!(!names.contains(&"GymMembership"), "GymMembership must NOT be flagged");
+        let names: Vec<&str> = result
+            .creeping_charges
+            .iter()
+            .map(|c| c.merchant.as_str())
+            .collect();
+        assert!(
+            names.contains(&"StreamingCo"),
+            "StreamingCo must be flagged"
+        );
+        assert!(
+            !names.contains(&"GymMembership"),
+            "GymMembership must NOT be flagged"
+        );
     }
 
     // 9a RED: upcoming renewals — future items appear, past do not
     #[test]
     fn upcoming_renewals_excludes_past_items() {
         let items = vec![
-            item("RentPayment", 1500.0, 1500.0, false, true),  // past
-            item("AnnualBackup", 99.0, 99.0, false, false),    // upcoming
-            item("StreamingCo", 13.99, 13.99, false, false),   // upcoming
+            item("RentPayment", 1500.0, 1500.0, false, true), // past
+            item("AnnualBackup", 99.0, 99.0, false, false),   // upcoming
+            item("StreamingCo", 13.99, 13.99, false, false),  // upcoming
         ];
         let result = compute_scan(&items);
-        let upcoming: Vec<&str> =
-            result.upcoming_renewals.iter().map(|u| u.merchant.as_str()).collect();
-        assert!(upcoming.contains(&"AnnualBackup"), "AnnualBackup must be upcoming");
-        assert!(upcoming.contains(&"StreamingCo"), "StreamingCo must be upcoming");
+        let upcoming: Vec<&str> = result
+            .upcoming_renewals
+            .iter()
+            .map(|u| u.merchant.as_str())
+            .collect();
+        assert!(
+            upcoming.contains(&"AnnualBackup"),
+            "AnnualBackup must be upcoming"
+        );
+        assert!(
+            upcoming.contains(&"StreamingCo"),
+            "StreamingCo must be upcoming"
+        );
         assert!(
             !upcoming.contains(&"RentPayment"),
             "RentPayment must NOT be upcoming (is_past=true)"
@@ -247,7 +283,13 @@ mod tests {
     #[test]
     fn empty_items_produce_empty_scan() {
         let result = compute_scan(&[]);
-        assert!(result.creeping_charges.is_empty(), "expected no creeping charges");
-        assert!(result.upcoming_renewals.is_empty(), "expected no upcoming renewals");
+        assert!(
+            result.creeping_charges.is_empty(),
+            "expected no creeping charges"
+        );
+        assert!(
+            result.upcoming_renewals.is_empty(),
+            "expected no upcoming renewals"
+        );
     }
 }
