@@ -13,9 +13,19 @@ from steps.common import call_tool
 # ---------------------------------------------------------------------------
 
 
-@given("the household's net worth by account type over the past {n:d} months is")
+@given("the household's net worth by account type over the past {n:d} months is:")
 def step_snapshots_by_type(context, n: int):
     """Table: month | account_type | balance"""
+    _configure_snapshots(context)
+
+
+@given("the household's net worth by account type over the past {n:d} month is:")
+def step_snapshots_by_type_singular(context, n: int):
+    """Table: month | account_type | balance"""
+    _configure_snapshots(context)
+
+
+def _configure_snapshots(context):
     rows = []
     for row in context.table:
         rows.append(
@@ -113,26 +123,6 @@ def step_assert_biggest_mover(context, account_type: str):
 
 @then("the trend reports {account_type} moved by positive {amount:d} dollars")
 def step_assert_mover_positive(context, account_type: str, amount: int):
-    result = context.trend_result
-    by_type = result.get("by_account_type", {})
-    change = by_type.get(account_type, {}).get("change", 0.0)
-    assert abs(change - float(amount)) < 0.01, (
-        f"Expected {account_type} change +{amount}, got {change}"
-    )
-
-
-@then("the trend reports {account_type} moved by positive {amount:f} dollars")
-def step_assert_mover_positive_float(context, account_type: str, amount: float):
-    result = context.trend_result
-    by_type = result.get("by_account_type", {})
-    change = by_type.get(account_type, {}).get("change", 0.0)
-    assert abs(change - amount) < 0.01, (
-        f"Expected {account_type} change +{amount}, got {change}"
-    )
-
-
-@then("the trend reports {account_type} moved by positive {amount:d} dollars")
-def step_assert_type_moved_positive(context, account_type: str, amount: int):
     result = context.trend_result
     by_type = result.get("by_account_type", {})
     change = by_type.get(account_type, {}).get("change", 0.0)

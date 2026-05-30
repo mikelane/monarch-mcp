@@ -13,7 +13,7 @@ from steps.common import call_tool
 # ---------------------------------------------------------------------------
 
 
-@given("the household has the following recurring charges this period")
+@given("the household has the following recurring charges this period:")
 def step_recurring_charges(context):
     """Table: merchant | stream_amount | actual_amount? | frequency | is_approximate | is_past?"""
     items = []

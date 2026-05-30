@@ -38,8 +38,8 @@ def step_income_received(context, amount: int):
     requests.post(f"{context.mock_base}/configure", json={"cashflow": current})
 
 
-@given("the following recurring bills are still due this month")
-def step_upcoming_bills(context, ):
+@given("the following recurring bills are still due this month:")
+def step_upcoming_bills(context):
     """Table: merchant | amount"""
     items = []
     for row in context.table:
@@ -57,7 +57,7 @@ def step_upcoming_bills(context, ):
     _post_recurring(context)
 
 
-@given("the following recurring bills were already paid this month")
+@given("the following recurring bills were already paid this month:")
 def step_past_bills(context):
     """Table: merchant | amount"""
     items = []
