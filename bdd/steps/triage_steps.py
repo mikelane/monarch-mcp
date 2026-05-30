@@ -26,12 +26,24 @@ def step_past_categorized(context, merchant: str, category: str):
         }
     )
     context._history_transactions = history
-    # We fold history into the main transactions list so the server has it
     all_txns = history + getattr(context, "_uncategorized_transactions", [])
     requests.post(f"{context.mock_base}/configure", json={"transactions": all_txns})
 
 
-@given("a new uncategorized transaction from \"{merchant}\"")
+@given('no past transactions from "{merchant}"')
+def step_no_past_transactions(context, merchant: str):
+    """Ensure the merchant has no history so no category suggestion is made."""
+    # Remove any history for this merchant from the fixture store
+    history = [
+        t for t in getattr(context, "_history_transactions", [])
+        if t.get("merchant") != merchant
+    ]
+    context._history_transactions = history
+    all_txns = history + getattr(context, "_uncategorized_transactions", [])
+    requests.post(f"{context.mock_base}/configure", json={"transactions": all_txns})
+
+
+@given('a new uncategorized transaction from "{merchant}"')
 def step_new_uncategorized(context, merchant: str):
     uncategorized = getattr(context, "_uncategorized_transactions", [])
     uncategorized.append(
@@ -44,28 +56,23 @@ def step_new_uncategorized(context, merchant: str):
     )
     context._uncategorized_transactions = uncategorized
     context._last_uncategorized_merchant = merchant
-    # Transactions needing review
     requests.post(
         f"{context.mock_base}/configure",
         json={"transactions_needing_review": uncategorized},
     )
-    # Merge with history in main transactions list
     all_txns = getattr(context, "_history_transactions", []) + uncategorized
     requests.post(f"{context.mock_base}/configure", json={"transactions": all_txns})
 
 
 @given('an uncategorized transaction from "{merchant}"')
 def step_uncategorized_only(context, merchant: str):
-    """Same as above but without historical context (no suggestion expected)."""
+    """Same as step_new_uncategorized — no historical context."""
     step_new_uncategorized(context, merchant)
 
 
-@given("a proposed change categorizing the \"{merchant}\" transaction as {category}")
+@given('a proposed change categorizing the "{merchant}" transaction as {category}')
 def step_proposed_change(context, merchant: str, category: str):
-    context._proposed_changeset = [
-        {"merchant": merchant, "category": category}
-    ]
-    # Mark the transaction as needing review
+    context._proposed_changeset = [{"merchant": merchant, "category": category}]
     uncategorized = [
         {
             "merchant": merchant,
@@ -77,13 +84,16 @@ def step_proposed_change(context, merchant: str, category: str):
     ]
     requests.post(
         f"{context.mock_base}/configure",
-        json={"transactions_needing_review": uncategorized, "transactions": uncategorized},
+        json={
+            "transactions_needing_review": uncategorized,
+            "transactions": uncategorized,
+        },
     )
 
 
 @given("a proposed change categorizing one transaction as {category}")
 def step_proposed_change_one_transaction(context, category: str):
-    """A changeset with one change for the first transaction in the list."""
+    """A changeset targeting the first transaction in the existing list."""
     all_txns = getattr(context, "_all_transactions", [])
     if all_txns:
         txn_id = str(all_txns[0].get("id", "0"))
@@ -91,7 +101,9 @@ def step_proposed_change_one_transaction(context, category: str):
     else:
         txn_id = "0"
         merchant = "Merchant 0"
-    context._proposed_changeset = [{"merchant": merchant, "category": category, "id": txn_id}]
+    context._proposed_changeset = [
+        {"merchant": merchant, "category": category, "id": txn_id}
+    ]
 
 
 @given("the month has {count:d} transactions")
@@ -109,6 +121,26 @@ def step_month_transaction_count(context, count: int):
     context._all_transactions = txns
     requests.post(f"{context.mock_base}/configure", json={"transactions": txns})
     context.expected_transaction_count = count
+
+
+@given("a proposed change that sets a transaction amount to {amount:d} dollars")
+def step_proposed_amount_change(context, amount: int):
+    """A changeset entry that includes an amount field — must be rejected."""
+    context._proposed_changeset = [
+        {"id": "txn-forbidden", "amount": float(amount)}
+    ]
+    # Seed a transaction with that id so the mock can look it up
+    forbidden_txn = {
+        "merchant": "Forbidden Merchant",
+        "amount": 99.0,
+        "category": "General",
+        "date": "2026-05-15",
+        "id": "txn-forbidden",
+    }
+    requests.post(
+        f"{context.mock_base}/configure",
+        json={"transactions": [forbidden_txn]},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +166,7 @@ def step_apply_changeset(context):
 # ---------------------------------------------------------------------------
 
 
-@then("the proposed change categorizes the \"{merchant}\" transaction as {category}")
+@then('the proposed change categorizes the "{merchant}" transaction as {category}')
 def step_assert_proposed_category(context, merchant: str, category: str):
     result = context.triage_result
     proposed = result.get("proposed_changes", [])
@@ -149,11 +181,21 @@ def step_assert_proposed_category(context, merchant: str, category: str):
     )
 
 
-@then("the \"{merchant}\" transaction remains uncategorized")
+@then('no category is proposed for the "{merchant}" transaction')
+def step_assert_no_proposed_category(context, merchant: str):
+    result = context.triage_result
+    proposed = result.get("proposed_changes", [])
+    merchant_proposals = [p for p in proposed if p.get("merchant") == merchant]
+    assert not merchant_proposals, (
+        f"Expected NO proposed change for {merchant!r}, but found: {merchant_proposals!r}. "
+        f"Full result: {result}"
+    )
+
+
+@then('the "{merchant}" transaction remains uncategorized')
 def step_assert_still_uncategorized(context, merchant: str):
     """Triage proposes but does not apply — the mock must still show Uncategorized."""
-    import requests as req
-    resp = req.get(f"{context.mock_base}/applied_changes")
+    resp = requests.get(f"{context.mock_base}/applied_changes")
     applied = resp.json()
     merchant_applied = [c for c in applied if c.get("merchant") == merchant]
     assert not merchant_applied, (
@@ -162,12 +204,15 @@ def step_assert_still_uncategorized(context, merchant: str):
     )
 
 
-@then("the \"{merchant}\" transaction is categorized as {category}")
+@then('the "{merchant}" transaction is categorized as {category}')
 def step_assert_categorized(context, merchant: str, category: str):
     resp = requests.get(f"{context.mock_base}/applied_changes")
     applied = resp.json()
     match = next(
-        (c for c in applied if c.get("merchant") == merchant or c.get("category") == category),
+        (
+            c for c in applied
+            if c.get("merchant") == merchant or c.get("category") == category
+        ),
         None,
     )
     assert match is not None, (
@@ -176,11 +221,10 @@ def step_assert_categorized(context, merchant: str, category: str):
     )
 
 
-@then("the month still has {count:d} transactions")
+@then("the month still has the same {count:d} transactions")
 def step_assert_transaction_count_unchanged(context, count: int):
     result = context.apply_result
     actual = result.get("transaction_count")
-    # Fallback: ask the mock for the transaction list length
     if actual is None:
         resp = requests.post(
             f"{context.mock_base}/graphql",
@@ -190,4 +234,53 @@ def step_assert_transaction_count_unchanged(context, count: int):
         actual = len(data.get("data", {}).get("transactions", []))
     assert actual == count, (
         f"Expected {count} transactions, got {actual!r}. Full result: {result}"
+    )
+
+
+# Alias for the original step wording ("the month still has {count:d} transactions")
+@then("the month still has {count:d} transactions")
+def step_assert_transaction_count_unchanged_plain(context, count: int):
+    step_assert_transaction_count_unchanged(context, count)
+
+
+@then("only category, tag, and note fields were changed")
+def step_assert_only_allowed_fields_changed(context):
+    """Verify the applied changeset contains no forbidden fields."""
+    resp = requests.get(f"{context.mock_base}/applied_changes")
+    applied = resp.json()
+    forbidden_fields = {"amount", "date", "merchant", "id"}
+    for change in applied:
+        changed_fields = set(change.keys()) - {"id"}  # id is always present as a key
+        disallowed = changed_fields & forbidden_fields
+        assert not disallowed, (
+            f"Applied change contains forbidden field(s) {disallowed!r}: {change!r}"
+        )
+
+
+@then("no transaction amount is changed")
+def step_assert_no_amount_changed(context):
+    """No applied change record should contain an amount key."""
+    resp = requests.get(f"{context.mock_base}/applied_changes")
+    applied = resp.json()
+    amount_changes = [c for c in applied if "amount" in c and not c.get("rejected")]
+    assert not amount_changes, (
+        f"Expected no amount changes, but found: {amount_changes!r}"
+    )
+
+
+@then("the advisor reports the disallowed change was rejected")
+def step_assert_rejection_reported(context):
+    """The tool result must indicate the forbidden change was rejected."""
+    result = context.apply_result
+    # The tool should surface a rejection either in the result body or via
+    # the mock's applied_changes rejection record.
+    rejected_in_result = result.get("rejected_changes", [])
+    if not rejected_in_result:
+        # Fall back: check the mock recorded a rejection
+        resp = requests.get(f"{context.mock_base}/applied_changes")
+        applied = resp.json()
+        rejected_in_result = [c for c in applied if c.get("rejected")]
+    assert rejected_in_result, (
+        f"Expected a rejected-change record, found none. "
+        f"apply_result={result!r}"
     )

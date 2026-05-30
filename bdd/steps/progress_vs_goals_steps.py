@@ -12,7 +12,7 @@ from steps.common import call_tool
 
 
 def _write_goals(context, goals: dict) -> None:
-    """Write goals to the scenario's temp TOML file and update env."""
+    """Write goals to the scenario's temp TOML file."""
     goals_file = context.goals_file
     with open(goals_file, "wb") as fh:
         tomli_w.dump(goals, fh)
@@ -33,7 +33,7 @@ def step_savings_rate_goal(context, pct: int):
 
 @given("the household's actual savings rate is {pct:d} percent")
 def step_actual_savings_rate(context, pct: int):
-    # Model as cashflow: income=100, savings=pct so rate=pct%
+    # Model as cashflow: income=100, spending such that savings=pct%
     income = 10000.0
     spending = income * (1 - pct / 100.0)
     requests.post(
@@ -56,7 +56,6 @@ def step_cash_reserves(context, months: int):
     # Monthly expenses = 5000; reserves = months * 5000
     monthly_expenses = 5000.0
     reserves = months * monthly_expenses
-    # Model reserves as a savings account balance
     requests.post(
         f"{context.mock_base}/configure",
         json={
@@ -67,7 +66,10 @@ def step_cash_reserves(context, months: int):
                     "currentBalance": reserves,
                 }
             ],
-            "cashflow": {"income": monthly_expenses * 1.2, "spending": monthly_expenses},
+            "cashflow": {
+                "income": monthly_expenses * 1.2,
+                "spending": monthly_expenses,
+            },
         },
     )
     context.actual_reserve_months = months
@@ -76,7 +78,6 @@ def step_cash_reserves(context, months: int):
 @given("the household has not set a debt-payoff goal")
 def step_no_debt_payoff_goal(context):
     goals = getattr(context, "_goals", {})
-    # Explicitly ensure no debt_payoff key exists
     goals.pop("debt_payoff", None)
     context._goals = goals
     _write_goals(context, goals)

@@ -2,15 +2,14 @@
 Mock Monarch GraphQL server.
 
 Runs a local Flask HTTP server that answers:
-  POST /auth/login/   — returns a session token
-  POST /graphql       — dispatches to fixture-backed handlers
+  POST /auth/login/   — returns a session token (or 401 if session_expired)
+  POST /graphql       — dispatches to fixture-backed handlers (or 401 if session_expired)
 
 Fixture state is reset per scenario via the /reset and /configure endpoints.
 """
 
 from __future__ import annotations
 
-import json
 import threading
 from typing import Any
 
@@ -29,7 +28,10 @@ _DEFAULT_FIXTURES: dict[str, Any] = {
     "categories": [],
     "tags": [],
     "prior_month_net_worth": 0.0,
+    "prior_month_spending": 0.0,
     "applied_changes": [],
+    # When True every authenticated endpoint returns 401
+    "session_expired": False,
 }
 
 
@@ -67,21 +69,31 @@ app = Flask(__name__)
 app.config["TESTING"] = False
 
 
+def _session_expired() -> bool:
+    with _fixtures_lock:
+        return bool(_fixtures.get("session_expired", False))
+
+
 @app.route("/auth/login/", methods=["POST"])
 def login() -> Any:
     """Simulate Monarch's DRF token login.
 
-    Accepts any credentials and returns a static test token.
-    Returns 403 with MFA signal when the body lacks a totp field on first call
-    only if the fixture is configured to require MFA — for simplicity we always
-    succeed so step definitions don't need to manage MFA state.
+    Returns 401 when session_expired is set so the MCP binary receives the
+    same signal it would from a real expired Monarch session.
     """
+    if _session_expired():
+        return jsonify({"detail": "Invalid token."}), 401
     return jsonify({"token": "mock-test-token-abc123"})
 
 
 @app.route("/graphql", methods=["POST"])
 def graphql() -> Any:
     """Dispatch GraphQL operations to fixture-backed handlers."""
+    if _session_expired():
+        return (
+            jsonify({"errors": [{"message": "Authentication credentials were not provided."}]}),
+            401,
+        )
     body = request.get_json(force=True, silent=True) or {}
     operation = body.get("operationName", "")
     handler = _OPERATION_HANDLERS.get(operation)
@@ -135,7 +147,7 @@ def _handle_get_transactions(body: dict) -> dict:
     fixtures = get_fixtures()
     txns = [
         {
-            "id": str(i),
+            "id": t.get("id", str(i)),
             "amount": t.get("amount", 0.0),
             "date": t.get("date", "2026-05-01"),
             "merchantName": t.get("merchant", ""),
@@ -152,7 +164,7 @@ def _handle_get_transactions_needing_review(body: dict) -> dict:
     fixtures = get_fixtures()
     txns = [
         {
-            "id": str(i),
+            "id": t.get("id", str(i)),
             "amount": t.get("amount", 0.0),
             "date": t.get("date", "2026-05-01"),
             "merchantName": t.get("merchant", ""),
@@ -185,6 +197,7 @@ def _handle_get_cashflow(body: dict) -> dict:
             "cashflow": {
                 "income": cf.get("income", 0.0),
                 "spending": cf.get("spending", 0.0),
+                "prior_month_spending": fixtures.get("prior_month_spending", 0.0),
             }
         }
     }
@@ -203,12 +216,31 @@ def _handle_get_tags(body: dict) -> dict:
 
 
 def _handle_update_transaction(body: dict) -> dict:
-    """Simulate applying a category/tags/notes change to one transaction."""
+    """Simulate applying a category/tags/notes change to one transaction.
+
+    Rejects any attempt to change the ``amount`` field — the tidy path is
+    restricted to category, tags, and notes only.  A rejected change is
+    recorded in ``applied_changes`` with a ``rejected`` flag so the Then
+    steps can assert on it.
+    """
     variables = body.get("variables", {})
     txn_id = variables.get("id", "")
     category = variables.get("category")
     tags = variables.get("tags")
     notes = variables.get("notes")
+    amount = variables.get("amount")
+
+    # Amount changes are forbidden — record the rejection and return an error.
+    if amount is not None:
+        rejection = {"id": txn_id, "rejected": True, "reason": "amount_change_forbidden"}
+        with _fixtures_lock:
+            _fixtures.setdefault("applied_changes", []).append(rejection)
+        return {
+            "errors": [
+                {"message": "Changing transaction amount is not permitted via the tidy path."}
+            ],
+            "data": {"updateTransaction": None},
+        }
 
     change_record = {"id": txn_id}
     if category is not None:
@@ -220,7 +252,7 @@ def _handle_update_transaction(body: dict) -> dict:
 
     with _fixtures_lock:
         _fixtures.setdefault("applied_changes", []).append(change_record)
-        # Also update the transaction in the transactions list so subsequent reads reflect it
+        # Update the in-memory transaction so subsequent reads reflect it
         for txn in _fixtures.get("transactions", []):
             if str(txn.get("id", "")) == str(txn_id):
                 if category is not None:

@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+import re
+
 import requests
-from behave import given, then, when
+from behave import given, then, when, use_step_matcher
 
 from steps.common import call_tool
+
+# Matches ordinal suffixes: 1st, 2nd, 3rd, 4th … 31st
+_ORDINAL_RE = re.compile(r"^(\d+)(?:st|nd|rd|th)$", re.IGNORECASE)
+
+
+def _parse_day(day_str: str) -> int:
+    """Convert an ordinal day string ('14th', '1st', '22nd') to an integer."""
+    match = _ORDINAL_RE.match(day_str.strip())
+    if match:
+        return int(match.group(1))
+    return int(day_str.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -16,9 +29,17 @@ from steps.common import call_tool
 @given("the {category} budget is {amount:d} dollars this month")
 def step_budget(context, category: str, amount: int):
     budgets = getattr(context, "_budgets", [])
-    # Replace existing entry for the category if present
     budgets = [b for b in budgets if b["category"] != category]
     budgets.append({"category": category, "amount": float(amount)})
+    context._budgets = budgets
+    requests.post(f"{context.mock_base}/configure", json={"budgets": budgets})
+
+
+@given("no budget is set for {category} this month")
+def step_no_budget(context, category: str):
+    """Ensure the given category has no budget entry at all."""
+    budgets = getattr(context, "_budgets", [])
+    budgets = [b for b in budgets if b["category"] != category]
     context._budgets = budgets
     requests.post(f"{context.mock_base}/configure", json={"budgets": budgets})
 
@@ -41,12 +62,13 @@ def step_category_spending(context, amount: int, category: str):
 @given('a charge of {amount} dollars from "{merchant}" on the {day}')
 def step_first_charge(context, amount: str, merchant: str, day: str):
     txns = getattr(context, "_transactions", [])
+    day_num = _parse_day(day)
     txns.append(
         {
             "merchant": merchant,
             "amount": float(amount),
             "category": "Subscriptions",
-            "date": f"2026-05-{int(day.rstrip('th').rstrip('st').rstrip('nd').rstrip('rd')):02d}",
+            "date": f"2026-05-{day_num:02d}",
         }
     )
     context._transactions = txns
@@ -55,7 +77,6 @@ def step_first_charge(context, amount: str, merchant: str, day: str):
 
 @given('another charge of {amount} dollars from "{merchant}" on the {day}')
 def step_second_charge(context, amount: str, merchant: str, day: str):
-    # Identical to the first — triggers duplicate detection
     step_first_charge(context, amount, merchant, day)
 
 
@@ -84,6 +105,13 @@ def step_this_month_spending(context, amount: int):
     requests.post(f"{context.mock_base}/configure", json={"transactions": txns})
 
 
+@given("the household has no transactions this month")
+def step_no_transactions(context):
+    """Configure an empty transaction list — the tool must report zero spend."""
+    context._transactions = []
+    requests.post(f"{context.mock_base}/configure", json={"transactions": []})
+
+
 # ---------------------------------------------------------------------------
 # When
 # ---------------------------------------------------------------------------
@@ -97,8 +125,25 @@ def step_generate_spending_report(context):
 
 
 # ---------------------------------------------------------------------------
-# Then
+# Then — use regex step matcher for steps that would be ambiguous
+# with the parameterised "{category}" forms.
 # ---------------------------------------------------------------------------
+
+# Switch to regex matcher for the ambiguous steps only, then switch back.
+use_step_matcher("re")
+
+
+@then(r"the report flags no categories as over budget")
+def step_assert_no_over_budget(context):
+    result = context.spending_result
+    over_budget = result.get("over_budget_categories", [])
+    assert over_budget == [], (
+        f"Expected no over-budget categories, got {over_budget!r}. "
+        f"Full result: {result}"
+    )
+
+
+use_step_matcher("parse")
 
 
 @then("the report flags {category} as over budget")
@@ -132,6 +177,26 @@ def step_assert_not_over_budget(context, category: str):
     )
 
 
+@then("the report shows {amount:d} dollars spent on {category}")
+def step_assert_category_spend(context, amount: int, category: str):
+    result = context.spending_result
+    by_category = result.get("by_category", {})
+    actual = by_category.get(category, {}).get("spent")
+    assert actual == float(amount), (
+        f"Expected {amount} dollars spent on {category!r}, got {actual!r}. "
+        f"Full result: {result}"
+    )
+
+
+@then("the report shows {amount:d} dollars spent")
+def step_assert_total_spend(context, amount: int):
+    result = context.spending_result
+    actual = result.get("total_spent")
+    assert actual == float(amount), (
+        f"Expected total spend {amount}, got {actual!r}. Full result: {result}"
+    )
+
+
 @then('the report flags a possible duplicate charge from "{merchant}"')
 def step_assert_duplicate_flag(context, merchant: str):
     result = context.spending_result
@@ -139,6 +204,17 @@ def step_assert_duplicate_flag(context, merchant: str):
     merchants = [d.get("merchant") for d in duplicates]
     assert merchant in merchants, (
         f"Expected duplicate from {merchant!r} in {merchants!r}. "
+        f"Full result: {result}"
+    )
+
+
+@then('the report does not flag a possible duplicate charge from "{merchant}"')
+def step_assert_no_duplicate_flag(context, merchant: str):
+    result = context.spending_result
+    duplicates = result.get("possible_duplicates", [])
+    merchants = [d.get("merchant") for d in duplicates]
+    assert merchant not in merchants, (
+        f"Expected NO duplicate from {merchant!r} but found it in {merchants!r}. "
         f"Full result: {result}"
     )
 
