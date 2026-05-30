@@ -118,24 +118,34 @@ fn build_category_reports(
         .collect()
 }
 
-/// Round (spent / budget * 100) to the nearest whole percent.
+/// Round (spent / budget_magnitude * 100) to the nearest whole percent.
+///
+/// Monarch stores expense budgets as negative `plannedCashFlowAmount` values
+/// (e.g., "Loan Repayment" → `-1280`). We compare magnitudes so that a budget
+/// of either `1280` or `-1280` yields the same percent for a given spend.
 ///
 /// Returns `None` when `budget` is zero to avoid a divide-by-zero producing
 /// `inf` (which casts to `i64::MAX`) or `NaN` (which casts to `0`).
 fn percent_of_budget(spent: f64, budget: f64) -> Option<i64> {
-    if budget == 0.0 {
+    let magnitude = budget.abs();
+    if magnitude == 0.0 {
         return None;
     }
-    Some(((spent / budget) * 100.0).round() as i64)
+    Some(((spent / magnitude) * 100.0).round() as i64)
 }
 
-/// A category is over budget only when spending strictly exceeds its budget.
+/// A category is over budget only when spending strictly exceeds the budget magnitude.
+///
+/// Monarch stores expense budgets as negative `plannedCashFlowAmount` values
+/// (e.g., "Loan Repayment" → `-1280`). We compare `spent` against `budget.abs()`
+/// so that both positive-budget and negative-budget categories use the same
+/// magnitude comparison. "Over budget" means "spent more than the planned amount".
 fn find_over_budget_categories(category_reports: &HashMap<String, CategoryReport>) -> Vec<String> {
     let mut over_budget: Vec<String> = category_reports
         .iter()
         .filter_map(|(name, report)| {
             report.budget.and_then(|budget| {
-                if report.spent > budget {
+                if report.spent > budget.abs() {
                     Some(name.clone())
                 } else {
                     None
@@ -465,6 +475,70 @@ mod tests {
         assert!(
             report.over_budget_categories.contains(&"Streaming".to_string()),
             "spending on a $0-budget category must still be classified over budget"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 9a RED: negative-budget (loan-repayment style) — Monarch stores planned
+    // outflows as negative plannedCashFlowAmount values.  A budget of -1280
+    // means "plan to pay $1280 on the loan".  Transactions for that category
+    // have positive amounts (all expenses are positive in Transaction.amount).
+    // Over-budget means magnitude-of-spending > magnitude-of-budget.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn negative_budget_under_magnitude_is_not_over_budget() {
+        // Planned: -1280 (loan repayment). Actual spend: 1000 (< 1280 magnitude).
+        let txns = vec![make_txn("Loan Co", 1000.0, "Loan Repayment", "2026-05-15")];
+        let budgets = vec![make_budget("Loan Repayment", -1280.0)];
+        let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
+        assert!(
+            !report.over_budget_categories.contains(&"Loan Repayment".to_string()),
+            "spending 1000 against a -1280 budget should NOT be over budget (1000 < 1280)"
+        );
+    }
+
+    #[test]
+    fn negative_budget_over_magnitude_is_flagged_as_over_budget() {
+        // Planned: -1280. Actual spend: 1400 (> 1280 magnitude) → over budget.
+        let txns = vec![make_txn("Loan Co", 1400.0, "Loan Repayment", "2026-05-15")];
+        let budgets = vec![make_budget("Loan Repayment", -1280.0)];
+        let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
+        assert!(
+            report.over_budget_categories.contains(&"Loan Repayment".to_string()),
+            "spending 1400 against a -1280 budget SHOULD be over budget (1400 > 1280)"
+        );
+    }
+
+    #[test]
+    fn negative_budget_percent_of_budget_is_positive_and_sane() {
+        // 1000 spent against -1280 budget → 1000/1280 * 100 = 78%  (not negative)
+        assert_eq!(percent_of_budget(1000.0, -1280.0), Some(78));
+    }
+
+    #[test]
+    fn negative_budget_exactly_at_magnitude_is_not_over_budget() {
+        // Planned: -1280. Actual spend: exactly 1280 → at budget, not over.
+        let txns = vec![make_txn("Loan Co", 1280.0, "Loan Repayment", "2026-05-15")];
+        let budgets = vec![make_budget("Loan Repayment", -1280.0)];
+        let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
+        assert!(
+            !report.over_budget_categories.contains(&"Loan Repayment".to_string()),
+            "spending exactly 1280 against a -1280 budget should NOT be over budget"
+        );
+        let cat = report.by_category.get("Loan Repayment").unwrap();
+        assert_eq!(cat.percent_of_budget, Some(100));
+    }
+
+    #[test]
+    fn negative_budget_zero_spend_is_not_over_budget() {
+        // Planned: -1280. No transactions this month → $0 spent, not over budget.
+        let txns = vec![];
+        let budgets = vec![make_budget("Loan Repayment", -1280.0)];
+        let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
+        assert!(
+            !report.over_budget_categories.contains(&"Loan Repayment".to_string()),
+            "zero spend against a negative budget should not be over budget"
         );
     }
 

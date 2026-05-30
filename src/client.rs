@@ -104,6 +104,11 @@ pub struct Category {
 pub struct Budget {
     pub category: Category,
     /// `plannedCashFlowAmount` from the budget monthly amounts.
+    ///
+    /// Monarch stores expense/outflow budgets as **negative** values
+    /// (e.g., "Loan Repayment" → `-1280`). Callers must use `amount.abs()`
+    /// when comparing magnitudes. `spending_report.rs` does this via
+    /// `percent_of_budget` and `find_over_budget_categories`.
     pub amount: f64,
 }
 

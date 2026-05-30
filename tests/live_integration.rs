@@ -256,9 +256,12 @@ async fn budgets_return_valid_structure_from_real_monarch() {
             !b.category.name.is_empty(),
             "budget category name must not be empty"
         );
+        // Monarch stores expense budgets as negative plannedCashFlowAmount values
+        // (e.g., "Loan Repayment" → -1280). The only invariant is nonzero and
+        // finite — zero-budget categories are filtered by get_budgets().
         assert!(
-            b.amount > 0.0,
-            "budget amount must be positive (zero budgets are filtered), got {} for {}",
+            b.amount.is_finite() && b.amount != 0.0,
+            "budget amount must be finite and nonzero (zero budgets are filtered), got {} for {}",
             b.amount,
             b.category.name
         );
