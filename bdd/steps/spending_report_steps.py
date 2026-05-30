@@ -28,9 +28,23 @@ def _parse_day(day_str: str) -> int:
 
 @given("the {category} budget is {amount:d} dollars this month")
 def step_budget(context, category: str, amount: int):
+    _configure_budget(context, category, float(amount))
+
+
+@given("the {category} budget is -{amount:d} dollars this month")
+def step_budget_negative(context, category: str, amount: int):
+    """Configure a negative (outflow) budget — e.g. 'Loan Repayment budget is -1280'.
+
+    Monarch stores expense/outflow budgets as negative plannedCashFlowAmount values.
+    The mock passes this through unchanged; spending_report.rs compares magnitudes.
+    """
+    _configure_budget(context, category, -float(amount))
+
+
+def _configure_budget(context, category: str, amount: float) -> None:
     budgets = getattr(context, "_budgets", [])
     budgets = [b for b in budgets if b["category"] != category]
-    budgets.append({"category": category, "amount": float(amount)})
+    budgets.append({"category": category, "amount": amount})
     context._budgets = budgets
     requests.post(f"{context.mock_base}/configure", json={"budgets": budgets})
 

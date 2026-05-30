@@ -40,6 +40,22 @@ Feature: Spending report
       Then the report flags Dining as over budget
       And the report flags Shopping as over budget
 
+  Rule: Monarch stores outflow budgets as negative amounts; comparison uses magnitudes
+
+    Scenario: Spending under the magnitude of a negative loan budget is not over budget
+      Given the Loan Repayment budget is -1280 dollars this month
+      And the household has spent 1000 dollars on Loan Repayment this month
+      When the advisor generates a spending report for this month
+      Then the report does not flag Loan Repayment as over budget
+      And the report shows Loan Repayment at 78 percent of budget
+
+    Scenario: Spending over the magnitude of a negative budget is flagged
+      Given the Loan Repayment budget is -1280 dollars this month
+      And the household has spent 1400 dollars on Loan Repayment this month
+      When the advisor generates a spending report for this month
+      Then the report flags Loan Repayment as over budget
+      And the report shows Loan Repayment at 109 percent of budget
+
   Rule: Spending in a category with no budget is reported without a budget comparison
 
     Scenario: An unbudgeted category is reported but not flagged as over budget
