@@ -12,6 +12,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Least privilege — none of these jobs write to the repo.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: fmt + clippy
