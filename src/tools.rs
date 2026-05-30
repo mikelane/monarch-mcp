@@ -1,9 +1,8 @@
 //! Tool registry — registers the four compound tool names for `tools/list`.
-//!
-//! Tool logic is not implemented yet (issues A4–A7). Each handler returns an
-//! honest "not implemented" MCP error so the BDD harness can confirm the
-//! binary launches and handshakes before the tool bodies exist.
 
+use crate::client::MonarchClient;
+use crate::error::MonarchError;
+use crate::financial_overview::compute_overview;
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::router::tool::ToolRouter,
@@ -11,6 +10,7 @@ use rmcp::{
     service::RequestContext,
     tool, tool_router,
 };
+use serde_json::json;
 
 #[derive(Clone)]
 pub struct MonarchTools {
@@ -33,10 +33,25 @@ impl MonarchTools {
         &self,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Err(McpError::internal_error(
-            "financial_overview is not yet implemented (issue A4)",
-            None,
-        ))
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute(&client).await {
+            Ok(overview) => serde_json::to_value(&overview)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
     }
 
     #[tool(description = "Break down spending for a period by category, compare against \
@@ -76,6 +91,19 @@ impl MonarchTools {
             None,
         ))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Data fetching helper — isolated so the tool handler stays readable
+// ---------------------------------------------------------------------------
+
+async fn fetch_and_compute(
+    client: &MonarchClient,
+) -> Result<crate::financial_overview::OverviewResult, MonarchError> {
+    let accounts = client.get_accounts().await?;
+    let cashflow = client.get_cashflow().await?;
+    let history = client.get_net_worth_history().await?;
+    Ok(compute_overview(&accounts, &cashflow, &history))
 }
 
 #[rmcp::tool_handler]
