@@ -9,6 +9,10 @@ publish = false
 name = "monarch-mcp"
 path = "src/main.rs"
 
+[lib]
+name = "monarch_mcp"
+path = "src/lib.rs"
+
 [dependencies]
 rmcp = { version = "1.7.0", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -261,6 +261,10 @@ fn persist_token_to(path: &PathBuf, token: &str) -> Result<(), MonarchError> {
     Ok(())
 }
 
+/// Convenience wrapper — writes to the default config path (env-resolved).
+/// Not used when the client is constructed via `new()` (which captures the
+/// path at construction time), but kept for any future non-client callers.
+#[allow(dead_code)]
 fn persist_token(token: &str) -> Result<(), MonarchError> {
     persist_token_to(&session_path(), token)
 }
@@ -272,6 +276,7 @@ fn load_token_from(path: &PathBuf) -> Option<String> {
         .map(|s| s.token)
 }
 
+#[allow(dead_code)]
 fn load_persisted_token() -> Option<String> {
     load_token_from(&session_path())
 }
@@ -288,11 +293,26 @@ pub struct MonarchClient {
     device_uuid: String,
     /// The active session token. `None` until `authenticate()` is called.
     token: Option<String>,
+    /// Session file path — resolved once at construction from MONARCH_CONFIG_DIR /
+    /// XDG_CONFIG_HOME / HOME so async calls don't race on env-var reads.
+    session_file_path: PathBuf,
 }
 
 impl MonarchClient {
     /// Build a client. `base` defaults to `https://api.monarch.com` when `None`.
+    ///
+    /// The session file path is resolved **once at construction** from the current
+    /// env so that concurrent tests setting `MONARCH_CONFIG_DIR` don't interfere
+    /// with each other after the client is built.
     pub fn new(base: Option<String>) -> Self {
+        Self::with_session_path(base, session_path())
+    }
+
+    /// Build a client with an explicit session file path.
+    ///
+    /// Used by tests to avoid env-var races: each test passes its own temp path
+    /// directly rather than using `MONARCH_CONFIG_DIR`.
+    pub fn with_session_path(base: Option<String>, session_file_path: PathBuf) -> Self {
         let http = Client::builder()
             .user_agent(USER_AGENT)
             .cookie_store(true)
@@ -308,6 +328,7 @@ impl MonarchClient {
             origin: DEFAULT_ORIGIN.to_string(),
             device_uuid,
             token: None,
+            session_file_path,
         }
     }
 
@@ -322,7 +343,7 @@ impl MonarchClient {
                 return;
             }
         }
-        self.token = load_persisted_token();
+        self.token = load_token_from(&self.session_file_path);
     }
 
     /// Return the current session token, or `None` if not authenticated.
@@ -407,7 +428,9 @@ impl MonarchClient {
             .to_string();
 
         self.token = Some(token.clone());
-        persist_token(&token).map_err(|e| LoginError::Http(e.to_string()))?;
+        // Use the path captured at construction time — avoids env-var races in tests.
+        persist_token_to(&self.session_file_path, &token)
+            .map_err(|e| LoginError::Http(e.to_string()))?;
         Ok(token)
     }
 
@@ -954,15 +977,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut client = MonarchClient::new(Some(server.uri()));
-        // Patch the client's login to write the session to a temp path so we
-        // don't touch ~/.config. We do this by setting MONARCH_CONFIG_DIR only
-        // briefly, accepting the minor race risk for this auth-logic test.
+        // Use with_session_path so the session write goes to an isolated temp
+        // dir with no env-var races against concurrent tests.
         let tmp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("MONARCH_CONFIG_DIR", tmp.path()) };
+        let session_file = tmp.path().join("monarch-mcp").join("session.json");
+        let mut client = MonarchClient::with_session_path(Some(server.uri()), session_file);
         let token = client.login_password("user@example.com", "secret").await.unwrap();
-        unsafe { std::env::remove_var("MONARCH_CONFIG_DIR") };
-        drop(tmp);
         assert_eq!(token, "tok-abc");
         assert_eq!(client.token(), Some("tok-abc"));
     }
@@ -987,6 +1007,10 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // Auth: 403 → retry with TOTP succeeds
+    //
+    // Does NOT use set_var (env vars race in parallel tokio tests). Instead
+    // we verify the token returned by login_totp directly; session persistence
+    // is tested separately via persist_and_load_token_roundtrip_in_isolated_dir.
     // -----------------------------------------------------------------------
 
     #[tokio::test]
@@ -1006,23 +1030,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Isolate session writes to a temp dir; env vars are global so we point
-        // the client directly rather than using set_var (which races with other tests).
+        // Use with_session_path — no env-var races with concurrent tests.
         let tmp = tempfile::tempdir().unwrap();
-        let mut client = MonarchClient::new(Some(server.uri()));
-        // Override the session path by setting MONARCH_CONFIG_DIR only for the
-        // duration of the persist call — we do this by temporarily setting the var
-        // inside a dedicated scope and restoring immediately.
-        {
-            unsafe { std::env::set_var("MONARCH_CONFIG_DIR", tmp.path()) };
-            let err = client.login_password("u", "p").await.unwrap_err();
-            assert!(matches!(err, LoginError::MfaRequired));
-            let token = client.login_totp("u", "p", "123456").await.unwrap();
-            unsafe { std::env::remove_var("MONARCH_CONFIG_DIR") };
-            assert_eq!(token, "tok-mfa");
-        }
-        // tmp is dropped here, cleaning up the isolated session file
-        drop(tmp);
+        let session_file = tmp.path().join("monarch-mcp").join("session.json");
+        let mut client = MonarchClient::with_session_path(Some(server.uri()), session_file);
+        let err = client.login_password("u", "p").await.unwrap_err();
+        assert!(matches!(err, LoginError::MfaRequired));
+        let token = client.login_totp("u", "p", "123456").await.unwrap();
+        assert_eq!(token, "tok-mfa");
     }
 
     // -----------------------------------------------------------------------
