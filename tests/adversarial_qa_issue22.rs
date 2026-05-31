@@ -82,9 +82,7 @@ fn debt_payoff_only_config_serializes_only_a_guidance_field() {
         vec!["guidance"],
         "debt_payoff-only config must serialize to exactly a guidance field, got: {json}"
     );
-    let guidance = obj["guidance"]
-        .as_str()
-        .expect("guidance must be a string");
+    let guidance = obj["guidance"].as_str().expect("guidance must be a string");
     assert!(
         guidance.contains("debt") || guidance.contains("#27"),
         "guidance for a debt-only config must reference debt-payoff (or #27), got: {guidance:?}"
