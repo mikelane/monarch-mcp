@@ -93,7 +93,7 @@ All notable changes to this project are documented here. The format is based on
 - extend BDD harness to cover Gate-1 adversarial review additions
 - stand up Python + behave BDD harness (A1 bootstrap, RED state)
 
-### Added
+### Overview
 
 - Initial release of the `monarch-mcp` MCP server with seven compound tools:
   `financial_overview`, `spending_report`, `progress_vs_goals`, `cashflow_forecast`,
