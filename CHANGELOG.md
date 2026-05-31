@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/mikelane/monarch-mcp/compare/v0.1.0...v0.1.1) - 2026-05-31
+
+### Documentation
+
+- document cargo binstall as a no-compile install path ([#16](https://github.com/mikelane/monarch-mcp/pull/16))
+
+### Fixed
+
+- single changelog headers + skip chore: release commits (closes #14) ([#17](https://github.com/mikelane/monarch-mcp/pull/17))
+
+### Miscellaneous
+
+- *(deps)* bump schemars from 0.8.22 to 1.2.1 ([#9](https://github.com/mikelane/monarch-mcp/pull/9))
+- *(deps)* bump toml from 0.8.23 to 1.1.2+spec-1.1.0 ([#8](https://github.com/mikelane/monarch-mcp/pull/8))
+- *(deps)* bump astral-sh/setup-uv from 5 to 7 ([#7](https://github.com/mikelane/monarch-mcp/pull/7))
+- *(deps)* bump actions/checkout from 4 to 6 ([#5](https://github.com/mikelane/monarch-mcp/pull/5))
+- *(deps)* bump gitleaks/gitleaks-action from 2 to 3 ([#4](https://github.com/mikelane/monarch-mcp/pull/4))
+
 ## [0.1.0](https://github.com/mikelane/monarch-mcp/releases/tag/v0.1.0) - 2026-05-30
 
 ### Added
