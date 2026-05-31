@@ -135,8 +135,8 @@ pub fn compute_progress(goals: &Goals, accounts: &[Account], cashflow: &Cashflow
     // never a silent empty object. Wording adapts when a debt-payoff goal is set
     // (its progress is not computed yet — tracked in #27) so we don't falsely
     // claim "no goals configured".
-    let no_visible_progress = savings_rate.is_none() && emergency_fund.is_none();
-    let guidance = no_visible_progress.then(|| {
+    let has_no_computable_goals = savings_rate.is_none() && emergency_fund.is_none();
+    let guidance = has_no_computable_goals.then(|| {
         if goals.debt_payoff.is_some() {
             "A debt-payoff goal is configured, but debt-payoff progress tracking is \
              not available yet (tracked in #27). Set a savings-rate or emergency-fund \
