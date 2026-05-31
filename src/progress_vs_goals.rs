@@ -14,6 +14,8 @@ use serde::Serialize;
 
 /// The result payload returned as JSON by `progress_vs_goals`.
 /// Only fields for goals that have been set are present.
+/// When no goals are configured, `guidance` is set instead so first-run
+/// users receive helpful direction rather than a silent empty response.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct GoalsProgress {
     /// Savings-rate goal progress — present only when the goal is set.
@@ -23,6 +25,10 @@ pub struct GoalsProgress {
     /// Emergency-fund runway goal progress — present only when the goal is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub emergency_fund: Option<GoalStatus>,
+
+    /// Set when no goals have been configured — explains how to add them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<String>,
 }
 
 /// Classification of a single goal.
@@ -102,6 +108,10 @@ pub fn actual_reserve_months(accounts: &[Account], cashflow: &Cashflow) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Compute goal progress from already-fetched Monarch data and loaded goals.
+///
+/// When no goals have been configured, returns a `guidance` message directing
+/// the household to create a goals.toml — consistent with the soft re-auth
+/// pattern (a successful MCP result whose body explains next steps).
 pub fn compute_progress(goals: &Goals, accounts: &[Account], cashflow: &Cashflow) -> GoalsProgress {
     let savings_rate = goals.savings_rate.as_ref().map(|g| {
         let actual = actual_savings_rate_pct(cashflow);
@@ -117,9 +127,19 @@ pub fn compute_progress(goals: &Goals, accounts: &[Account], cashflow: &Cashflow
         }
     });
 
+    let no_goals_configured =
+        goals.savings_rate.is_none() && goals.emergency_fund.is_none() && goals.debt_payoff.is_none();
+
+    let guidance = no_goals_configured.then(|| {
+        "No goals configured yet. Add a goals.toml file and set \
+         MONARCH_GOALS_FILE to its path to start tracking progress."
+            .to_string()
+    });
+
     GoalsProgress {
         savings_rate,
         emergency_fund,
+        guidance,
     }
 }
 
@@ -461,6 +481,32 @@ mod tests {
         let result = compute_progress(&goals, &[], &cashflow(10000.0, 8000.0));
         assert!(result.savings_rate.is_none());
         assert!(result.emergency_fund.is_none());
+    }
+
+    // --- RED: empty goals yields a guidance message, not a silent empty payload ---
+
+    #[test]
+    fn empty_goals_returns_guidance_message() {
+        let goals = empty_goals();
+        let result = compute_progress(&goals, &[], &cashflow(10000.0, 8000.0));
+        let guidance = result.guidance.as_deref().unwrap_or("");
+        assert!(
+            guidance.contains("no goals") || guidance.contains("goals.toml"),
+            "expected guidance about missing goals, got: {guidance:?}"
+        );
+    }
+
+    // --- TRIANGULATE: a goal being set means no guidance message ---
+
+    #[test]
+    fn goals_present_means_no_guidance() {
+        let goals = goals_with_savings_rate(20.0);
+        let cf = cashflow(10000.0, 7500.0);
+        let result = compute_progress(&goals, &[], &cf);
+        assert!(
+            result.guidance.is_none(),
+            "guidance should be absent when goals are configured"
+        );
     }
 
     #[test]

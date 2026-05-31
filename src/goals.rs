@@ -64,11 +64,19 @@ pub struct DebtPayoffGoal {
 
 impl Goals {
     /// Load goals from the file at `path`. Returns `Ok(Goals::default())` when
-    /// the file is empty. Returns `Err(MonarchError::GoalsFile)` on I/O or
-    /// parse failures.
+    /// the file does not exist or is empty. Returns `Err(MonarchError::GoalsFile)`
+    /// on other I/O errors (e.g. permission denied) or TOML parse failures.
     pub fn load_from_path(path: &Path) -> Result<Self, MonarchError> {
-        let contents = std::fs::read_to_string(path)
-            .map_err(|e| MonarchError::GoalsFile(format!("cannot read {}: {e}", path.display())))?;
+        let contents = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Goals::default()),
+            Err(e) => {
+                return Err(MonarchError::GoalsFile(format!(
+                    "cannot read {}: {e}",
+                    path.display()
+                )))
+            }
+        };
 
         if contents.trim().is_empty() {
             return Ok(Goals::default());
