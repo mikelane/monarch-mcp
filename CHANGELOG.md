@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- `progress_vs_goals` no longer crashes with MCP error -32603 when `MONARCH_GOALS_FILE`
+  points at a path that does not exist yet. First-run users now receive a helpful
+  guidance message explaining how to create a goals.toml file ([#22](https://github.com/mikelane/monarch-mcp/issues/22))
+
 ## [0.1.1](https://github.com/mikelane/monarch-mcp/compare/v0.1.0...v0.1.1) - 2026-05-31
 
 ### Documentation

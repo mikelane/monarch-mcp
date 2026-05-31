@@ -64,11 +64,19 @@ pub struct DebtPayoffGoal {
 
 impl Goals {
     /// Load goals from the file at `path`. Returns `Ok(Goals::default())` when
-    /// the file is empty. Returns `Err(MonarchError::GoalsFile)` on I/O or
-    /// parse failures.
+    /// the file does not exist or is empty. Returns `Err(MonarchError::GoalsFile)`
+    /// on other I/O errors (e.g. permission denied) or TOML parse failures.
     pub fn load_from_path(path: &Path) -> Result<Self, MonarchError> {
-        let contents = std::fs::read_to_string(path)
-            .map_err(|e| MonarchError::GoalsFile(format!("cannot read {}: {e}", path.display())))?;
+        let contents = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Goals::default()),
+            Err(e) => {
+                return Err(MonarchError::GoalsFile(format!(
+                    "cannot read {}: {e}",
+                    path.display()
+                )))
+            }
+        };
 
         if contents.trim().is_empty() {
             return Ok(Goals::default());
@@ -199,12 +207,38 @@ mod tests {
         );
     }
 
-    // --- TRIANGULATE: missing file returns GoalsFile error ---
+    // --- RED: missing file returns default Goals (not an error) ---
 
     #[test]
-    fn missing_file_returns_goals_file_error() {
-        let err = Goals::load_from_path(Path::new("/nonexistent/goals.toml")).unwrap_err();
-        assert!(matches!(err, MonarchError::GoalsFile(_)));
+    fn missing_goals_file_returns_default() {
+        let goals = Goals::load_from_path(Path::new("/nonexistent/goals.toml")).unwrap();
+        assert_eq!(goals, Goals::default());
+    }
+
+    // --- RED: permission-denied still returns a GoalsFile error ---
+
+    #[test]
+    fn permission_denied_goals_file_returns_error() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        // Skip this test when running as root — root bypasses file permissions
+        let uid_output = Command::new("id").arg("-u").output().unwrap();
+        let uid_str = String::from_utf8_lossy(&uid_output.stdout);
+        if uid_str.trim() == "0" {
+            return;
+        }
+
+        let f = write_goals_file("[savings_rate]\ntarget_percent = 20.0\n");
+        let path = f.path().to_path_buf();
+        // Seal the file so even the owner cannot read it
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let err = Goals::load_from_path(&path).unwrap_err();
+        assert!(
+            matches!(err, MonarchError::GoalsFile(_)),
+            "expected GoalsFile error for permission-denied, got: {err:?}"
+        );
     }
 
     // --- load_from_env: unset returns default ---
@@ -212,6 +246,30 @@ mod tests {
     #[test]
     fn unset_env_var_yields_default_goals() {
         temp_env::with_var_unset("MONARCH_GOALS_FILE", || {
+            let goals = Goals::load_from_env().unwrap();
+            assert_eq!(goals, Goals::default());
+        });
+    }
+
+    // --- RED: env var pointing at nonexistent path returns default (the issue-22 scenario) ---
+
+    #[test]
+    fn env_var_pointing_at_missing_file_returns_default() {
+        temp_env::with_var(
+            "MONARCH_GOALS_FILE",
+            Some("/nonexistent/monarch/goals.toml"),
+            || {
+                let goals = Goals::load_from_env().unwrap();
+                assert_eq!(goals, Goals::default());
+            },
+        );
+    }
+
+    // --- TRIANGULATE: env var set to empty string behaves like unset ---
+
+    #[test]
+    fn empty_env_var_yields_default_goals() {
+        temp_env::with_var("MONARCH_GOALS_FILE", Some(""), || {
             let goals = Goals::load_from_env().unwrap();
             assert_eq!(goals, Goals::default());
         });
