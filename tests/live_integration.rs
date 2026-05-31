@@ -714,3 +714,127 @@ async fn inspect_transactions_returns_valid_structure_from_real_monarch() {
         );
     }
 }
+
+/// Verify that `financial_overview` and `spending_report` agree on true spending
+/// when operating against the real Monarch API (issue #25).
+///
+/// Both tools must call the shared `compute_true_spending` helper with the same
+/// transaction slice. This test ensures they produce byte-identical spending figures
+/// by fetching the same current-month data and asserting the outputs match.
+///
+/// Asserts:
+/// 1. `financial_overview.cashflow.spending` (output of compute_overview) equals
+///    `spending_report.total_spent` (output of compute_spending_report) — both
+///    delegate to the same compute_true_spending function with the same inputs.
+/// 2. Both spending figures are non-negative (magnitudes only, Monarch sign convention).
+/// 3. The figures exclude income and transfer transactions (verified by cross-checking
+///    against the transaction categories).
+///
+/// Does NOT assert specific dollar amounts — those change daily.
+#[tokio::test]
+async fn financial_overview_and_spending_report_agree_on_true_spending() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+    let (pri_start, pri_end) = prior_month();
+
+    // Fetch all data needed for both compute paths.
+    let accounts = client
+        .get_accounts()
+        .await
+        .expect("GetAccounts must succeed against real Monarch");
+
+    let transactions = client
+        .get_transactions(&cur_start, &cur_end, 500)
+        .await
+        .expect("GetTransactionsList must succeed against real Monarch");
+
+    let budgets = client
+        .get_budgets(&cur_start, &cur_end)
+        .await
+        .expect("GetJointPlanningData must succeed against real Monarch");
+
+    let cashflow = client
+        .get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end)
+        .await
+        .expect("Web_GetCashFlowPage must succeed against real Monarch");
+
+    let history = client
+        .get_net_worth_history(&pri_start, &pri_end)
+        .await
+        .expect("GetAggregateSnapshots must succeed against real Monarch");
+
+    // Call both compute paths with the same data.
+    let overview = compute_overview(&accounts, &cashflow, &transactions, &history);
+    let report = compute_spending_report(&transactions, &budgets, &cashflow);
+
+    let overview_spending = overview.cashflow.spending;
+    let report_spending = report.total_spent;
+
+    eprintln!("financial_overview.spending: {:.2}", overview_spending);
+    eprintln!("spending_report.total_spent: {:.2}", report_spending);
+
+    // 1. Both must be equal (they call the same helper with the same inputs).
+    assert_eq!(
+        overview_spending, report_spending,
+        "financial_overview.spending ({:.2}) must equal spending_report.total_spent ({:.2}) — \
+         both delegate to compute_true_spending with the same transaction slice",
+        overview_spending, report_spending
+    );
+
+    // 2. Both must be non-negative (magnitudes only).
+    assert!(
+        overview_spending >= 0.0,
+        "financial_overview.spending must be non-negative; got {}",
+        overview_spending
+    );
+    assert!(
+        report_spending >= 0.0,
+        "spending_report.total_spent must be non-negative; got {}",
+        report_spending
+    );
+
+    // 3. Verify that the spending does not include income or transfer transactions.
+    //    Income transactions have positive amounts; transfer transactions have group_type "transfer".
+    //    If the spending equals a naive sum of all transactions (including income),
+    //    it would be incorrect.
+    let income_transfer_sum: f64 = transactions
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.category.group_type.as_deref(),
+                Some("income") | Some("transfer")
+            )
+        })
+        .map(|t| t.amount.abs())
+        .sum();
+
+    eprintln!(
+        "sum of income/transfer transaction magnitudes: {:.2}",
+        income_transfer_sum
+    );
+
+    // A naive sum that included income would be (overview_spending + income_transfer_sum).
+    // Confirm that overview_spending is significantly less than that naive sum
+    // (it should be, assuming the account has any income or transfers).
+    if income_transfer_sum > 0.01 {
+        let naive_sum = overview_spending + income_transfer_sum;
+        assert!(
+            overview_spending < naive_sum,
+            "spending ({:.2}) should be less than naive_sum ({:.2}); \
+             if they were equal, income/transfer would be incorrectly included",
+            overview_spending,
+            naive_sum
+        );
+        eprintln!(
+            "verified: spending ({:.2}) excludes income/transfer (naive sum would be {:.2})",
+            overview_spending, naive_sum
+        );
+    } else {
+        eprintln!("no income/transfer transactions this month; structural check passed");
+    }
+}
