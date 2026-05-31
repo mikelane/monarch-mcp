@@ -458,6 +458,20 @@ fn days_in_month(year: i64, month: u32) -> u32 {
 // Data fetching helpers — isolated so tool handlers stay readable
 // ---------------------------------------------------------------------------
 
+/// Fetch all transactions for the current month without a row cap.
+///
+/// Both `financial_overview` and `spending_report` must consume the same slice
+/// so their spending totals agree (issue #25). Using `u32::MAX` as the limit
+/// ensures no transaction is silently dropped regardless of how many the
+/// household has in a given month.
+async fn fetch_current_month_transactions(
+    client: &MonarchClient,
+    start: &str,
+    end: &str,
+) -> Result<Vec<crate::client::Transaction>, MonarchError> {
+    client.get_transactions(start, end, u32::MAX).await
+}
+
 async fn fetch_and_compute(
     client: &MonarchClient,
 ) -> Result<crate::financial_overview::OverviewResult, MonarchError> {
@@ -467,7 +481,7 @@ async fn fetch_and_compute(
     let (accounts, cashflow, transactions, history) = tokio::try_join!(
         client.get_accounts(),
         client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
-        client.get_transactions(&cur_start, &cur_end, 500),
+        fetch_current_month_transactions(client, &cur_start, &cur_end),
         client.get_net_worth_history(&pri_start, &pri_end),
     )?;
     Ok(compute_overview(
@@ -485,7 +499,7 @@ async fn fetch_and_compute_spending(
     let (pri_start, pri_end) = prior_month_range();
 
     let (transactions, budgets, cashflow) = tokio::try_join!(
-        client.get_transactions(&cur_start, &cur_end, 500),
+        fetch_current_month_transactions(client, &cur_start, &cur_end),
         client.get_budgets(&cur_start, &cur_end),
         client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
     )?;

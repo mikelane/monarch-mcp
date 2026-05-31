@@ -275,7 +275,7 @@ fn find_possible_reversals(transactions: &[Transaction]) -> Vec<ReversalPair> {
                 None => continue,
             };
             let gap = refund_days - charge_days;
-            if gap < 0 || gap > REVERSAL_WINDOW_DAYS {
+            if !(0..=REVERSAL_WINDOW_DAYS).contains(&gap) {
                 continue;
             }
 

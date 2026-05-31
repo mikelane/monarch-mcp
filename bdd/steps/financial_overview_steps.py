@@ -61,6 +61,21 @@ def step_spending(context, amount: int):
     current["spending"] = float(amount)
     context._cashflow = current
     requests.post(f"{context.mock_base}/configure", json={"cashflow": current})
+    # financial_overview now computes spending from transactions (compute_true_spending),
+    # not from the cashflow aggregate. Configure a matching expense transaction so the
+    # mock returns the right spending figure when GetTransactionsList is called.
+    txns = getattr(context, "_transactions", [])
+    txns.append(
+        {
+            "merchant": "Household spending",
+            "amount": -float(amount),
+            "category": "General",
+            "group_type": "expense",
+            "date": "2026-05-15",
+        }
+    )
+    context._transactions = txns
+    requests.post(f"{context.mock_base}/configure", json={"transactions": txns})
 
 
 @given("the household's net worth was {amount:d} dollars last month")
