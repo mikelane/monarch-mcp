@@ -204,6 +204,7 @@ mod tests {
             merchant_name: merchant.to_string(),
             category: Category {
                 name: category.to_string(),
+                group_type: Some("expense".into()),
             },
             tags: vec![],
             notes: String::new(),
@@ -215,6 +216,7 @@ mod tests {
         Budget {
             category: Category {
                 name: category.to_string(),
+                group_type: None,
             },
             amount,
         }

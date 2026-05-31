@@ -235,6 +235,7 @@ mod tests {
             merchant_name: merchant.to_string(),
             category: Category {
                 name: category.to_string(),
+                group_type: Some("expense".into()),
             },
             tags: vec![],
             notes: String::new(),
@@ -258,6 +259,7 @@ mod tests {
             merchant_name: merchant.to_string(),
             category: Category {
                 name: category.to_string(),
+                group_type: Some("expense".into()),
             },
             tags: tags.into_iter().map(str::to_string).collect(),
             notes: notes.to_string(),

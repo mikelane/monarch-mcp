@@ -240,6 +240,9 @@ def _make_transaction(index: int, t: dict) -> dict:
         }
         for i2, tag in enumerate(tags_raw)
     ]
+    # group_type: fixture may override per-transaction; default "expense".
+    # income/transfer transactions must set "group_type" in the fixture dict.
+    group_type = t.get("group_type", "expense")
     return {
         "id": str(t.get("id", index)),
         "amount": t.get("amount", 0.0),
@@ -257,6 +260,10 @@ def _make_transaction(index: int, t: dict) -> dict:
         "category": {
             "id": str(t.get("category_id", f"cat-{index}")),
             "name": cat_name,
+            "group": {
+                "type": group_type,
+                "__typename": "CategoryGroup",
+            },
             "__typename": "Category",
         },
         "merchant": {
