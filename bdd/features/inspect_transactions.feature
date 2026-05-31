@@ -53,6 +53,13 @@ Feature: Inspect transactions for a category or merchant
       When the advisor inspects transactions in the "Pets" category
       Then no transaction was modified in the mock
 
+  Rule: An empty filter string is transparent — identical to omitting the filter
+
+    Scenario: An empty-string category filter returns the same transactions as no filter
+      Given five transactions this month across different categories
+      When the advisor inspects transactions with category filter ""
+      Then the result contains all five transactions
+
   Rule: An expired session is reported as needing re-authentication
 
     Scenario: An expired session asks the household to re-authenticate

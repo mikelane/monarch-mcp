@@ -142,6 +142,15 @@ def step_inspect_by_merchant(context, merchant: str):
     )
 
 
+@when('the advisor inspects transactions with category filter ""')
+def step_inspect_with_empty_category_filter(context):
+    # An empty string must be transparent — the server must treat it as no
+    # filter and return all transactions, not a misleading scoped view.
+    context.inspect_result = call_tool(
+        context, "inspect_transactions", {"category": ""}
+    )
+
+
 @when('the advisor applies a changeset recategorizing "{txn_id}" as "{new_category}"')
 def step_apply_changeset_from_inspect(context, txn_id: str, new_category: str):
     context.apply_result = call_tool(
