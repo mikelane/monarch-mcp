@@ -61,7 +61,8 @@ pub fn compute_spending_report(
     let budget_map = build_budget_map(budgets);
     let category_reports = build_category_reports(&by_category, &budget_map);
     let over_budget_categories = find_over_budget_categories(&category_reports);
-    let total_spent = by_category.values().sum();
+    // by_category already holds positive expense magnitudes — sum them directly.
+    let total_spent: f64 = by_category.values().sum();
     let possible_duplicates = find_possible_duplicates(transactions);
     let prior_period = PriorPeriodComparison {
         delta: total_spent - cashflow.prior_month_spending,
@@ -76,11 +77,40 @@ pub fn compute_spending_report(
     }
 }
 
-/// Sum transaction amounts per category name.
+/// Compute spend magnitude for a single transaction.
+///
+/// Monarch sign convention: expense outflows are **negative**. We convert to a
+/// positive magnitude so `total_spent` and `percent_of_budget` are always ≥ 0.
+///
+/// Classification by `group_type`:
+/// - `"expense"`: include magnitude `(-amount).max(0.0)`. A positive amount in
+///   an expense category is a refund and contributes zero spend.
+/// - `"income"` or `"transfer"`: always 0 — excluded from spending entirely.
+/// - `None` (unknown group): defensive fallback — negative amounts count as
+///   expense magnitude so real spending is never silently hidden. Positive
+///   amounts contribute zero (treated as income/refund). See ADR 0004.
+fn transaction_spend_magnitude(txn: &Transaction) -> f64 {
+    match txn.category.group_type.as_deref() {
+        Some("expense") => (-txn.amount).max(0.0),
+        Some("income") | Some("transfer") => 0.0,
+        _ => (-txn.amount).max(0.0), // defensive: sign-based fallback for unknown types
+    }
+}
+
+/// Sum expense magnitudes per category name, excluding income and transfer categories.
+///
+/// Only categories whose `group_type` is `"expense"` (or unknown, via the
+/// defensive fallback in `transaction_spend_magnitude`) contribute to the totals.
 fn aggregate_spending_by_category(transactions: &[Transaction]) -> HashMap<String, f64> {
     let mut totals: HashMap<String, f64> = HashMap::new();
     for txn in transactions {
-        *totals.entry(txn.category.name.clone()).or_insert(0.0) += txn.amount;
+        let magnitude = transaction_spend_magnitude(txn);
+        // Only include expense categories (and unknown-group fallback) in the map.
+        // Income and transfer categories are excluded entirely so they never appear
+        // in by_category, percent_of_budget, or over_budget_categories.
+        if matches!(txn.category.group_type.as_deref(), Some("expense") | None) {
+            *totals.entry(txn.category.name.clone()).or_insert(0.0) += magnitude;
+        }
     }
     totals
 }
@@ -189,6 +219,11 @@ fn find_possible_duplicates(transactions: &[Transaction]) -> Vec<DuplicateCharge
 
 // ---------------------------------------------------------------------------
 // Tests — TDD: RED first, then GREEN
+//
+// Fixtures use the REAL Monarch sign convention:
+//   - expense outflows: NEGATIVE amounts (e.g. -850.0 for dining)
+//   - income: POSITIVE amounts (e.g. +5000.0 for a paycheck)
+//   - refunds landing in expense categories: POSITIVE (e.g. +50.0 for a medical refund)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -196,7 +231,8 @@ mod tests {
     use super::*;
     use crate::client::{Budget, Cashflow, Category, Transaction};
 
-    fn make_txn(merchant: &str, amount: f64, category: &str, date: &str) -> Transaction {
+    /// Build an expense transaction (negative amount, group_type = "expense").
+    fn make_expense_txn(merchant: &str, amount: f64, category: &str, date: &str) -> Transaction {
         Transaction {
             id: format!("{merchant}-{amount}-{date}"),
             amount,
@@ -205,6 +241,40 @@ mod tests {
             category: Category {
                 name: category.to_string(),
                 group_type: Some("expense".into()),
+            },
+            tags: vec![],
+            notes: String::new(),
+            needs_review: false,
+        }
+    }
+
+    /// Build an income transaction (positive amount, group_type = "income").
+    fn make_income_txn(merchant: &str, amount: f64, category: &str, date: &str) -> Transaction {
+        Transaction {
+            id: format!("{merchant}-{amount}-{date}"),
+            amount,
+            date: date.to_string(),
+            merchant_name: merchant.to_string(),
+            category: Category {
+                name: category.to_string(),
+                group_type: Some("income".into()),
+            },
+            tags: vec![],
+            notes: String::new(),
+            needs_review: false,
+        }
+    }
+
+    /// Build a transfer transaction (positive on the receiving side, group_type = "transfer").
+    fn make_transfer_txn(merchant: &str, amount: f64, category: &str, date: &str) -> Transaction {
+        Transaction {
+            id: format!("{merchant}-{amount}-{date}"),
+            amount,
+            date: date.to_string(),
+            merchant_name: merchant.to_string(),
+            category: Category {
+                name: category.to_string(),
+                group_type: Some("transfer".into()),
             },
             tags: vec![],
             notes: String::new(),
@@ -231,12 +301,19 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9a RED: over-budget flag — spending strictly exceeds budget
+    // Real sign convention: expense amounts are NEGATIVE in Monarch.
+    // over-budget flag — spending magnitude strictly exceeds budget magnitude.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn category_over_budget_is_flagged() {
-        let txns = vec![make_txn("Dining merchant", 850.0, "Dining", "2026-05-15")];
+    fn negative_expense_over_budget_is_flagged() {
+        // -850.0 dining against a 600.0 budget → magnitude 850 > 600 → over budget.
+        let txns = vec![make_expense_txn(
+            "Dining merchant",
+            -850.0,
+            "Dining",
+            "2026-05-15",
+        )];
         let budgets = vec![make_budget("Dining", 600.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
@@ -248,15 +325,11 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // 9b GREEN + 9c TRIANGULATE: exactly at budget is NOT over budget
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn category_exactly_at_budget_is_not_flagged() {
-        let txns = vec![make_txn(
+    fn negative_expense_exactly_at_budget_is_not_flagged() {
+        let txns = vec![make_expense_txn(
             "Groceries merchant",
-            900.0,
+            -900.0,
             "Groceries",
             "2026-05-15",
         )];
@@ -272,10 +345,10 @@ mod tests {
     }
 
     #[test]
-    fn category_under_budget_is_not_flagged() {
-        let txns = vec![make_txn(
+    fn negative_expense_under_budget_is_not_flagged() {
+        let txns = vec![make_expense_txn(
             "Groceries merchant",
-            720.0,
+            -720.0,
             "Groceries",
             "2026-05-15",
         )];
@@ -289,15 +362,11 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // 9c TRIANGULATE: every over-budget category is flagged (multiple)
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn all_over_budget_categories_are_flagged() {
+    fn all_over_budget_expense_categories_are_flagged() {
         let txns = vec![
-            make_txn("Dining merchant", 850.0, "Dining", "2026-05-15"),
-            make_txn("Shopping merchant", 500.0, "Shopping", "2026-05-15"),
+            make_expense_txn("Dining merchant", -850.0, "Dining", "2026-05-15"),
+            make_expense_txn("Shopping merchant", -500.0, "Shopping", "2026-05-15"),
         ];
         let budgets = vec![make_budget("Dining", 600.0), make_budget("Shopping", 400.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
@@ -316,45 +385,156 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9a RED: percent of budget — 850/600 → 142%
+    // Income categories are NEVER flagged as over-budget (#24 core fix).
     // -----------------------------------------------------------------------
 
     #[test]
-    fn percent_of_budget_rounds_to_nearest_whole() {
-        // 850/600 = 1.4166… → 142%
-        assert_eq!(percent_of_budget(850.0, 600.0), Some(142));
-        // 900/900 = 1.0 → 100%
-        assert_eq!(percent_of_budget(900.0, 900.0), Some(100));
+    fn income_category_is_never_flagged_as_over_budget() {
+        // A large paycheck — positive amount, group_type = "income".
+        // Even if there's a budget entry for it, income must not appear in over_budget.
+        let txns = vec![make_income_txn(
+            "Employer",
+            5000.0,
+            "Paychecks",
+            "2026-05-15",
+        )];
+        let budgets = vec![make_budget("Paychecks", 100.0)]; // contrived tiny budget
+        let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
+        assert!(
+            !report
+                .over_budget_categories
+                .contains(&"Paychecks".to_string()),
+            "income category Paychecks must never appear in over_budget_categories"
+        );
     }
 
     // -----------------------------------------------------------------------
-    // 9c TRIANGULATE: rounding boundary cases
+    // Transfer categories are NEVER included in total_spent or over-budget.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn percent_of_budget_rounds_up_at_half() {
-        // 0.5 rounds up → 50/100 = 50%, not a boundary; use 1/3 * 100 = 33.33 → 33
+    fn transfer_category_is_excluded_from_spending() {
+        // Credit-card payment — transfer group.
+        let txns = vec![make_transfer_txn(
+            "Chase CC Payment",
+            2000.0,
+            "Credit Card Payment",
+            "2026-05-15",
+        )];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert_eq!(
+            report.total_spent, 0.0,
+            "transfer category must not contribute to total_spent"
+        );
+        assert!(
+            !report
+                .over_budget_categories
+                .contains(&"Credit Card Payment".to_string()),
+            "transfer category must not appear in over_budget_categories"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // total_spent reflects ONLY expense magnitudes (#24 core fix).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn total_spent_excludes_income_and_includes_only_expense_magnitudes() {
+        let txns = vec![
+            make_income_txn("Employer", 5000.0, "Paychecks", "2026-05-15"),
+            make_expense_txn("Whole Foods", -365.0, "Groceries", "2026-05-16"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert_eq!(
+            report.total_spent, 365.0,
+            "total_spent must equal grocery magnitude (365), not net 5000-365=4635"
+        );
+    }
+
+    #[test]
+    fn total_spent_is_sum_of_expense_magnitudes_only() {
+        let txns = vec![
+            make_expense_txn("Dining merchant", -850.0, "Dining", "2026-05-15"),
+            make_expense_txn("Groceries merchant", -720.0, "Groceries", "2026-05-15"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert_eq!(report.total_spent, 1570.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Refund landing in an expense category (positive amount) contributes
+    // zero spend magnitude — not flagged as over-budget (#24 core fix).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn expense_category_with_only_a_refund_is_not_flagged() {
+        // Medical refund: positive amount but group_type = "expense".
+        // The (-amount).max(0.0) logic produces 0 for this transaction.
+        let txns = vec![make_expense_txn("Insurer", 50.0, "Medical", "2026-05-15")];
+        let budgets = vec![make_budget("Medical", 200.0)];
+        let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
+        assert!(
+            !report
+                .over_budget_categories
+                .contains(&"Medical".to_string()),
+            "expense category with only a positive refund must not be over-budget"
+        );
+        let cat = report.by_category.get("Medical").unwrap();
+        assert_eq!(
+            cat.spent, 0.0,
+            "refund-only category must report 0 spend, not negative"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // percent_of_budget is positive for real expense transactions (#24).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn percent_of_budget_is_positive_for_negative_expense() {
+        // -850 spent against 600 budget → magnitude 850 / 600 = 141.67 → 142%.
+        // Not -142% as the old code produced.
+        assert_eq!(percent_of_budget(850.0, 600.0), Some(142));
+        assert_eq!(percent_of_budget(900.0, 900.0), Some(100));
+    }
+
+    #[test]
+    fn percent_of_budget_rounds_correctly() {
         assert_eq!(percent_of_budget(1.0, 3.0), Some(33));
-        // 2/3 * 100 = 66.67 → 67
         assert_eq!(percent_of_budget(2.0, 3.0), Some(67));
     }
 
     #[test]
-    fn category_report_includes_percent_when_budgeted() {
-        let txns = vec![make_txn("Dining merchant", 850.0, "Dining", "2026-05-15")];
+    fn expense_category_report_includes_positive_percent() {
+        let txns = vec![make_expense_txn(
+            "Dining merchant",
+            -850.0,
+            "Dining",
+            "2026-05-15",
+        )];
         let budgets = vec![make_budget("Dining", 600.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         let cat = report.by_category.get("Dining").unwrap();
         assert_eq!(cat.percent_of_budget, Some(142));
+        assert!(
+            cat.spent >= 0.0,
+            "spent must be non-negative magnitude, got {}",
+            cat.spent
+        );
     }
 
     // -----------------------------------------------------------------------
-    // 9a RED: unbudgeted category — reported but not flagged
+    // Unbudgeted expense category — reported but not flagged.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn unbudgeted_category_is_not_flagged_as_over_budget() {
-        let txns = vec![make_txn("Travel merchant", 300.0, "Travel", "2026-05-15")];
+    fn unbudgeted_expense_category_is_not_flagged_as_over_budget() {
+        let txns = vec![make_expense_txn(
+            "Travel merchant",
+            -300.0,
+            "Travel",
+            "2026-05-15",
+        )];
         let report = compute_spending_report(&txns, &[], &zero_cashflow());
         assert!(
             !report
@@ -369,14 +549,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9a RED: duplicate detection — same merchant + amount + date
+    // Duplicate detection — same merchant + amount + date.
     // -----------------------------------------------------------------------
 
     #[test]
     fn identical_charges_same_day_flagged_as_duplicate() {
         let txns = vec![
-            make_txn("Acme Streaming", 49.99, "Subscriptions", "2026-05-14"),
-            make_txn("Acme Streaming", 49.99, "Subscriptions", "2026-05-14"),
+            make_expense_txn("Acme Streaming", -49.99, "Subscriptions", "2026-05-14"),
+            make_expense_txn("Acme Streaming", -49.99, "Subscriptions", "2026-05-14"),
         ];
         let report = compute_spending_report(&txns, &[], &zero_cashflow());
         let merchants: Vec<&str> = report
@@ -391,15 +571,11 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // 9c TRIANGULATE: same merchant, different amount → NOT a duplicate
-    // -----------------------------------------------------------------------
-
     #[test]
     fn same_merchant_different_amount_not_a_duplicate() {
         let txns = vec![
-            make_txn("Acme Streaming", 49.99, "Subscriptions", "2026-05-14"),
-            make_txn("Acme Streaming", 9.99, "Subscriptions", "2026-05-14"),
+            make_expense_txn("Acme Streaming", -49.99, "Subscriptions", "2026-05-14"),
+            make_expense_txn("Acme Streaming", -9.99, "Subscriptions", "2026-05-14"),
         ];
         let report = compute_spending_report(&txns, &[], &zero_cashflow());
         let merchants: Vec<&str> = report
@@ -415,12 +591,17 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9a RED: prior-period delta
+    // Prior-period delta — uses total_spent (expense magnitudes only).
     // -----------------------------------------------------------------------
 
     #[test]
     fn prior_period_delta_is_positive_when_spending_increased() {
-        let txns = vec![make_txn("Various", 4600.0, "General", "2026-05-15")];
+        let txns = vec![make_expense_txn(
+            "Various",
+            -4600.0,
+            "General",
+            "2026-05-15",
+        )];
         let cashflow = Cashflow {
             income: 0.0,
             spending: 0.0,
@@ -430,13 +611,14 @@ mod tests {
         assert_eq!(report.vs_prior_month.delta, 600.0);
     }
 
-    // -----------------------------------------------------------------------
-    // 9c TRIANGULATE: prior-period delta when spending decreased
-    // -----------------------------------------------------------------------
-
     #[test]
     fn prior_period_delta_is_negative_when_spending_decreased() {
-        let txns = vec![make_txn("Various", 3000.0, "General", "2026-05-15")];
+        let txns = vec![make_expense_txn(
+            "Various",
+            -3000.0,
+            "General",
+            "2026-05-15",
+        )];
         let cashflow = Cashflow {
             income: 0.0,
             spending: 0.0,
@@ -447,7 +629,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9a RED: empty period
+    // Empty period.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -460,29 +642,17 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9c TRIANGULATE: total_spent is sum of all transactions
+    // Zero budget with nonzero expense spend.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn total_spent_is_sum_of_all_transactions() {
-        let txns = vec![
-            make_txn("Dining merchant", 850.0, "Dining", "2026-05-15"),
-            make_txn("Groceries merchant", 720.0, "Groceries", "2026-05-15"),
-        ];
-        let report = compute_spending_report(&txns, &[], &zero_cashflow());
-        assert_eq!(report.total_spent, 1570.0);
-    }
-
-    // -----------------------------------------------------------------------
-    // BUG 1 RED: zero budget with nonzero spend must NOT produce i64::MAX percent
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn zero_budget_with_spend_produces_no_percent_and_is_over_budget() {
-        // A Monarch category with a $0 budget and any spending:
-        // - percent_of_budget should be None (not i64::MAX from inf-cast)
-        // - the category IS over budget (spent > budget)
-        let txns = vec![make_txn("Netflix", 15.99, "Streaming", "2026-05-15")];
+    fn zero_budget_with_expense_spend_produces_no_percent_and_is_over_budget() {
+        let txns = vec![make_expense_txn(
+            "Netflix",
+            -15.99,
+            "Streaming",
+            "2026-05-15",
+        )];
         let budgets = vec![make_budget("Streaming", 0.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
 
@@ -490,11 +660,6 @@ mod tests {
             .by_category
             .get("Streaming")
             .expect("Streaming category must exist");
-        assert_ne!(
-            cat.percent_of_budget,
-            Some(i64::MAX),
-            "zero budget with spend must not produce i64::MAX percent"
-        );
         assert_eq!(
             cat.percent_of_budget, None,
             "zero budget should yield no percent (division by zero)"
@@ -508,17 +673,20 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9a RED: negative-budget (loan-repayment style) — Monarch stores planned
-    // outflows as negative plannedCashFlowAmount values.  A budget of -1280
-    // means "plan to pay $1280 on the loan".  Transactions for that category
-    // have positive amounts (all expenses are positive in Transaction.amount).
-    // Over-budget means magnitude-of-spending > magnitude-of-budget.
+    // Negative-budget (loan-repayment style) — Monarch stores planned
+    // outflows as negative plannedCashFlowAmount values. Transactions for
+    // expense categories are negative amounts in the real sign convention.
     // -----------------------------------------------------------------------
 
     #[test]
     fn negative_budget_under_magnitude_is_not_over_budget() {
-        // Planned: -1280 (loan repayment). Actual spend: 1000 (< 1280 magnitude).
-        let txns = vec![make_txn("Loan Co", 1000.0, "Loan Repayment", "2026-05-15")];
+        // Planned: -1280 (loan repayment). Actual spend: -1000 → magnitude 1000 < 1280.
+        let txns = vec![make_expense_txn(
+            "Loan Co",
+            -1000.0,
+            "Loan Repayment",
+            "2026-05-15",
+        )];
         let budgets = vec![make_budget("Loan Repayment", -1280.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
@@ -531,8 +699,13 @@ mod tests {
 
     #[test]
     fn negative_budget_over_magnitude_is_flagged_as_over_budget() {
-        // Planned: -1280. Actual spend: 1400 (> 1280 magnitude) → over budget.
-        let txns = vec![make_txn("Loan Co", 1400.0, "Loan Repayment", "2026-05-15")];
+        // Planned: -1280. Actual spend: -1400 → magnitude 1400 > 1280 → over budget.
+        let txns = vec![make_expense_txn(
+            "Loan Co",
+            -1400.0,
+            "Loan Repayment",
+            "2026-05-15",
+        )];
         let budgets = vec![make_budget("Loan Repayment", -1280.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
@@ -551,8 +724,13 @@ mod tests {
 
     #[test]
     fn negative_budget_exactly_at_magnitude_is_not_over_budget() {
-        // Planned: -1280. Actual spend: exactly 1280 → at budget, not over.
-        let txns = vec![make_txn("Loan Co", 1280.0, "Loan Repayment", "2026-05-15")];
+        // Planned: -1280. Actual spend: -1280 → at budget, not over.
+        let txns = vec![make_expense_txn(
+            "Loan Co",
+            -1280.0,
+            "Loan Repayment",
+            "2026-05-15",
+        )];
         let budgets = vec![make_budget("Loan Repayment", -1280.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
         assert!(
@@ -567,10 +745,8 @@ mod tests {
 
     #[test]
     fn negative_budget_zero_spend_is_not_over_budget() {
-        // Planned: -1280. No transactions this month → $0 spent, not over budget.
-        let txns = vec![];
         let budgets = vec![make_budget("Loan Repayment", -1280.0)];
-        let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
+        let report = compute_spending_report(&[], &budgets, &zero_cashflow());
         assert!(
             !report
                 .over_budget_categories
@@ -579,10 +755,64 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Defensive fallback: group_type = None → treat sign alone.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unknown_group_type_negative_amount_counts_as_expense_spend() {
+        // A transaction whose group_type is missing (None) but whose amount is
+        // negative falls back to the sign-based heuristic: treated as expense.
+        let txn = Transaction {
+            id: "unknown-1".into(),
+            amount: -100.0,
+            date: "2026-05-15".into(),
+            merchant_name: "Mystery Co".into(),
+            category: Category {
+                name: "Unknown".into(),
+                group_type: None,
+            },
+            tags: vec![],
+            notes: String::new(),
+            needs_review: false,
+        };
+        let report = compute_spending_report(&[txn], &[], &zero_cashflow());
+        assert_eq!(
+            report.total_spent, 100.0,
+            "negative-amount transaction with no group_type must count as 100 spend"
+        );
+    }
+
+    #[test]
+    fn unknown_group_type_positive_amount_is_not_counted_as_spend() {
+        // Unknown group_type with positive amount → treated as income/refund, 0 spend.
+        let txn = Transaction {
+            id: "unknown-2".into(),
+            amount: 200.0,
+            date: "2026-05-15".into(),
+            merchant_name: "Mystery Refund".into(),
+            category: Category {
+                name: "Unknown".into(),
+                group_type: None,
+            },
+            tags: vec![],
+            notes: String::new(),
+            needs_review: false,
+        };
+        let report = compute_spending_report(&[txn], &[], &zero_cashflow());
+        assert_eq!(
+            report.total_spent, 0.0,
+            "positive-amount transaction with no group_type must not count as spend"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Zero budget with zero spend — no percent, not over-budget.
+    // -----------------------------------------------------------------------
+
     #[test]
     fn zero_budget_with_zero_spend_produces_no_percent_and_is_not_over_budget() {
-        // $0 budget, $0 spend: NaN→0 is wrong — should also be None
-        let txns = vec![make_txn("Netflix", 0.0, "Streaming", "2026-05-15")];
+        let txns = vec![make_expense_txn("Netflix", 0.0, "Streaming", "2026-05-15")];
         let budgets = vec![make_budget("Streaming", 0.0)];
         let report = compute_spending_report(&txns, &budgets, &zero_cashflow());
 
