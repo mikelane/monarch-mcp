@@ -250,4 +250,24 @@ mod tests {
             assert_eq!(goals, Goals::default());
         });
     }
+
+    // --- RED: env var pointing at nonexistent path returns default (the issue-22 scenario) ---
+
+    #[test]
+    fn env_var_pointing_at_missing_file_returns_default() {
+        temp_env::with_var("MONARCH_GOALS_FILE", Some("/nonexistent/monarch/goals.toml"), || {
+            let goals = Goals::load_from_env().unwrap();
+            assert_eq!(goals, Goals::default());
+        });
+    }
+
+    // --- TRIANGULATE: env var set to empty string behaves like unset ---
+
+    #[test]
+    fn empty_env_var_yields_default_goals() {
+        temp_env::with_var("MONARCH_GOALS_FILE", Some(""), || {
+            let goals = Goals::load_from_env().unwrap();
+            assert_eq!(goals, Goals::default());
+        });
+    }
 }
