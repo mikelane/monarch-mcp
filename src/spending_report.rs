@@ -61,8 +61,9 @@ pub fn compute_spending_report(
     let budget_map = build_budget_map(budgets);
     let category_reports = build_category_reports(&by_category, &budget_map);
     let over_budget_categories = find_over_budget_categories(&category_reports);
-    // by_category already holds positive expense magnitudes — sum them directly.
-    let total_spent: f64 = by_category.values().sum();
+    // Delegate to the shared helper so spending_report and financial_overview
+    // always agree on the definition of "true spending".
+    let total_spent = compute_true_spending(transactions);
     let possible_duplicates = find_possible_duplicates(transactions);
     let prior_period = PriorPeriodComparison {
         delta: total_spent - cashflow.prior_month_spending,
@@ -215,6 +216,24 @@ fn find_possible_duplicates(transactions: &[Transaction]) -> Vec<DuplicateCharge
     }
 
     duplicates
+}
+
+// ---------------------------------------------------------------------------
+// Shared true-spending helper — used by both spending_report and financial_overview
+// ---------------------------------------------------------------------------
+
+/// Sum expense magnitudes across transactions, excluding income and transfer groups.
+///
+/// "True spending" = money that actually left the family. Credit card payments
+/// and transfers move money between the family's own accounts — they are
+/// inter-account movements, not consumption. Income is an inflow.
+///
+/// Classification follows the same rules as [`transaction_spend_magnitude`]:
+/// - `"expense"` group: magnitude of outflow (negative amount → positive value)
+/// - `"income"` or `"transfer"` group: 0 (excluded entirely)
+/// - `None` (unknown group): sign-based fallback — negative amounts count as spend
+pub fn compute_true_spending(transactions: &[Transaction]) -> f64 {
+    transactions.iter().map(transaction_spend_magnitude).sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +645,54 @@ mod tests {
         };
         let report = compute_spending_report(&txns, &[], &cashflow);
         assert_eq!(report.vs_prior_month.delta, -1000.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_true_spending — shared helper, tested directly.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn true_spending_sums_expense_magnitudes() {
+        let txns = vec![
+            make_expense_txn("Groceries", -365.0, "Groceries", "2026-05-10"),
+            make_expense_txn("Dining", -200.0, "Dining", "2026-05-15"),
+        ];
+        assert_eq!(compute_true_spending(&txns), 565.0);
+    }
+
+    #[test]
+    fn true_spending_excludes_income_group() {
+        let txns = vec![
+            make_income_txn("Employer", 5000.0, "Paychecks", "2026-05-01"),
+            make_expense_txn("Groceries", -365.0, "Groceries", "2026-05-10"),
+        ];
+        assert_eq!(compute_true_spending(&txns), 365.0);
+    }
+
+    #[test]
+    fn true_spending_excludes_transfer_group() {
+        let txns = vec![
+            make_transfer_txn("Chase", -3299.02, "Credit Card Payment", "2026-05-05"),
+            make_expense_txn("Groceries", -731.27, "Groceries", "2026-05-10"),
+        ];
+        let result = compute_true_spending(&txns);
+        // Only the grocery transaction should contribute
+        assert!(
+            (result - 731.27).abs() < 0.001,
+            "expected 731.27, got {result}"
+        );
+    }
+
+    #[test]
+    fn true_spending_refund_in_expense_category_contributes_zero() {
+        // A positive amount in an expense category is a refund → 0 spend
+        let txns = vec![make_expense_txn("Insurer", 50.0, "Medical", "2026-05-15")];
+        assert_eq!(compute_true_spending(&txns), 0.0);
+    }
+
+    #[test]
+    fn true_spending_empty_slice_is_zero() {
+        assert_eq!(compute_true_spending(&[]), 0.0);
     }
 
     // -----------------------------------------------------------------------
