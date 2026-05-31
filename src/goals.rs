@@ -255,10 +255,14 @@ mod tests {
 
     #[test]
     fn env_var_pointing_at_missing_file_returns_default() {
-        temp_env::with_var("MONARCH_GOALS_FILE", Some("/nonexistent/monarch/goals.toml"), || {
-            let goals = Goals::load_from_env().unwrap();
-            assert_eq!(goals, Goals::default());
-        });
+        temp_env::with_var(
+            "MONARCH_GOALS_FILE",
+            Some("/nonexistent/monarch/goals.toml"),
+            || {
+                let goals = Goals::load_from_env().unwrap();
+                assert_eq!(goals, Goals::default());
+            },
+        );
     }
 
     // --- TRIANGULATE: env var set to empty string behaves like unset ---
