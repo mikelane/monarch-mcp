@@ -1,4 +1,5 @@
 @ISSUE-A5
+@ISSUE-24
 Feature: Spending report
   The advisor's weekly/monthly workhorse. It groups spending by category,
   compares each category against its budget, flags overspending, surfaces
@@ -94,6 +95,36 @@ Feature: Spending report
       When the advisor generates a spending report for this month
       Then the report shows 0 dollars spent
       And the report flags no categories as over budget
+
+  Rule: Income and refunds are excluded from spending totals and over-budget detection
+
+    Scenario: An income category is never flagged as over budget
+      Given the household has received 5000 dollars of Paychecks income this month
+      When the advisor generates a spending report for this month
+      Then the report does not flag Paychecks as over budget
+
+    Scenario: A refund in an expense category is not flagged as over budget
+      Given the household has received a 120 dollar refund on Medical this month
+      When the advisor generates a spending report for this month
+      Then the report does not flag Medical as over budget
+
+    Scenario: total_spent reflects only expense outflows and excludes income
+      Given the household has received 5000 dollars of Paychecks income this month
+      And the household has spent 365 dollars on Groceries this month
+      When the advisor generates a spending report for this month
+      Then the report shows 365 dollars spent
+
+    Scenario Outline: percent_of_budget is positive for expense categories
+      Given the <category> budget is <budget> dollars this month
+      And the household has spent <spent> dollars on <category> this month
+      When the advisor generates a spending report for this month
+      Then the report shows <category> at <pct> percent of budget
+
+      Examples:
+        | category  | spent  | budget | pct |
+        | Insurance | 439    | 410    | 107 |
+        | Phone     | 223    | 200    | 112 |
+        | Groceries | 365    | 500    | 73  |
 
   Rule: An expired session is reported as needing re-authentication
 

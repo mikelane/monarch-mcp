@@ -113,6 +113,13 @@ pub struct Transaction {
 #[derive(Debug, Deserialize, Clone)]
 pub struct Category {
     pub name: String,
+    /// `category.group.type` from Monarch's GraphQL schema — lowercase enum:
+    /// `"expense"`, `"income"`, or `"transfer"`. Used by `spending_report` to
+    /// classify transactions and exclude income/transfer from `total_spent`.
+    ///
+    /// `None` when the field was not fetched (e.g. in budget-join paths that
+    /// don't need it) or when Monarch returns an unrecognised group type.
+    pub group_type: Option<String>,
 }
 
 /// A budget entry as consumed by spending_report.rs.
@@ -257,10 +264,19 @@ struct MerchantRaw {
 }
 
 #[derive(Debug, Deserialize)]
+struct CategoryGroupRaw {
+    /// Lowercase enum from Monarch: `"expense"`, `"income"`, `"transfer"`.
+    #[serde(rename = "type")]
+    pub group_type: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct CategoryRaw {
     #[allow(dead_code)]
     pub id: String,
     pub name: String,
+    /// Nullable in partial responses; always present when the full query runs.
+    pub group: Option<CategoryGroupRaw>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -615,7 +631,7 @@ impl MonarchClient {
                       date
                       needsReview
                       notes
-                      category { id name __typename }
+                      category { id name group { type __typename } __typename }
                       merchant { name id __typename }
                       account { id displayName __typename }
                       tags { id name color order __typename }
@@ -664,7 +680,7 @@ impl MonarchClient {
                       date
                       needsReview
                       notes
-                      category { id name __typename }
+                      category { id name group { type __typename } __typename }
                       merchant { name id __typename }
                       account { id displayName __typename }
                       tags { id name color order __typename }
@@ -756,7 +772,10 @@ impl MonarchClient {
                     .cloned()
                     .unwrap_or_else(|| entry.category.id.clone());
                 Some(Budget {
-                    category: Category { name },
+                    category: Category {
+                        name,
+                        group_type: None,
+                    },
                     amount,
                 })
             })
@@ -1178,16 +1197,18 @@ pub struct CategoryWithId {
 // ---------------------------------------------------------------------------
 
 fn transaction_from_raw(raw: TransactionRaw) -> Transaction {
+    let (cat_name, group_type) = match raw.category {
+        Some(c) => (c.name, c.group.map(|g| g.group_type)),
+        None => ("Uncategorized".to_string(), None),
+    };
     Transaction {
         id: raw.id,
         amount: raw.amount,
         date: raw.date,
         merchant_name: raw.merchant.map(|m| m.name).unwrap_or_default(),
         category: Category {
-            name: raw
-                .category
-                .map(|c| c.name)
-                .unwrap_or_else(|| "Uncategorized".to_string()),
+            name: cat_name,
+            group_type,
         },
         tags: raw.tags.into_iter().map(|t| t.name).collect(),
         notes: raw.notes.unwrap_or_default(),

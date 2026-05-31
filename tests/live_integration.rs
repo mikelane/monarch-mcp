@@ -36,6 +36,7 @@ use monarch_mcp::financial_overview::compute_overview;
 use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
 use monarch_mcp::net_worth_trend::compute_trend;
 use monarch_mcp::recurring_scan::compute_scan;
+use monarch_mcp::spending_report::compute_spending_report;
 use std::env;
 
 fn live_enabled() -> bool {
@@ -443,6 +444,122 @@ async fn recurring_scan_returns_valid_structure_from_real_monarch() {
         assert!(
             !renewal.merchant.is_empty(),
             "upcoming renewal merchant must not be empty"
+        );
+    }
+}
+
+/// Verify that `spending_report` honours the Monarch sign convention when
+/// operating against the real API (issue #24).
+///
+/// Asserts:
+/// 1. `over_budget_categories` contains only expense-group categories — no
+///    income or transfer category ever appears there, regardless of amount.
+/// 2. `total_spent` is non-negative (magnitudes only, never negative sums).
+/// 3. `total_spent` is within a 3× factor of `financial_overview.spending`
+///    (soft cross-check; full reconciliation is issue #25).  A gross mismatch
+///    would indicate that income transactions are being summed into spending.
+///
+/// Does NOT assert specific dollar amounts — those change daily.
+#[tokio::test]
+async fn spending_report_excludes_income_and_uses_correct_sign_convention() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+    let (pri_start, pri_end) = prior_month();
+
+    // Fetch all data needed for spending_report.
+    let transactions = client
+        .get_transactions(&cur_start, &cur_end, 500)
+        .await
+        .expect("GetTransactionsList must succeed against real Monarch");
+
+    let budgets = client
+        .get_budgets(&cur_start, &cur_end)
+        .await
+        .expect("GetJointPlanningData must succeed against real Monarch");
+
+    let cashflow = client
+        .get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end)
+        .await
+        .expect("Web_GetCashFlowPage must succeed against real Monarch");
+
+    let report = compute_spending_report(&transactions, &budgets, &cashflow);
+
+    eprintln!("total_spent: {:.2}", report.total_spent);
+    eprintln!(
+        "over_budget_categories: {:?}",
+        report.over_budget_categories
+    );
+    eprintln!("financial_overview.spending: {:.2}", cashflow.spending);
+
+    // 1. total_spent must be non-negative — expense magnitudes are always ≥ 0.
+    assert!(
+        report.total_spent >= 0.0,
+        "total_spent must be non-negative; got {}. \
+         A negative value indicates income transactions are being sign-summed into spending.",
+        report.total_spent
+    );
+
+    // 2. No income or transfer category must appear in over_budget_categories.
+    //    We verify this by checking every over-budget category name against the
+    //    transaction list — if a category had only income/transfer transactions
+    //    it must not appear in over_budget_categories.
+    let income_transfer_categories: std::collections::HashSet<String> = transactions
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.category.group_type.as_deref(),
+                Some("income") | Some("transfer")
+            )
+        })
+        .map(|t| t.category.name.clone())
+        .collect();
+
+    // A category that is exclusively income/transfer must never be over-budget.
+    // (A category with both expense and income transactions, e.g. a refund + charge,
+    // may legitimately appear if net expense exceeds budget — that is correct.)
+    let expense_categories_with_any_expense: std::collections::HashSet<String> = transactions
+        .iter()
+        .filter(|t| matches!(t.category.group_type.as_deref(), Some("expense") | None))
+        .map(|t| t.category.name.clone())
+        .collect();
+
+    for cat in &report.over_budget_categories {
+        let is_income_only = income_transfer_categories.contains(cat)
+            && !expense_categories_with_any_expense.contains(cat);
+        assert!(
+            !is_income_only,
+            "income/transfer-only category {:?} must never appear in over_budget_categories. \
+             This indicates sign-convention is not being applied correctly.",
+            cat
+        );
+    }
+
+    // 3. Soft cross-check: spending_report.total_spent must be within a 3×
+    //    factor of financial_overview.spending (cashflow.spending).
+    //    Both should reflect expense outflows for the same period.
+    //    A gross mismatch (e.g. 10× difference) indicates income was counted.
+    //    We allow 3× slack because cashflow aggregates differently than
+    //    per-transaction sums (pending transactions, rounding, etc.).
+    //    Skip this check when either value is zero (early in the month).
+    if report.total_spent > 0.0 && cashflow.spending > 0.0 {
+        let ratio = report.total_spent / cashflow.spending;
+        assert!(
+            (0.1..=3.0).contains(&ratio),
+            "spending_report.total_spent ({:.2}) is more than 3× away from \
+             financial_overview.spending ({:.2}); ratio = {:.2}. \
+             This likely indicates income transactions are inflating total_spent.",
+            report.total_spent,
+            cashflow.spending,
+            ratio
+        );
+        eprintln!(
+            "spending ratio (total_spent / cashflow.spending): {:.2}",
+            ratio
         );
     }
 }

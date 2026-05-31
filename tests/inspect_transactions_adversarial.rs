@@ -27,6 +27,7 @@ fn txn(id: &str, merchant: &str, amount: f64, category: &str, date: &str) -> Tra
         merchant_name: merchant.to_string(),
         category: Category {
             name: category.to_string(),
+            group_type: Some("expense".into()),
         },
         tags: vec![],
         notes: String::new(),
