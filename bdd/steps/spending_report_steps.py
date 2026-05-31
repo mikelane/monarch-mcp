@@ -61,11 +61,15 @@ def step_no_budget(context, category: str):
 @given("the household has spent {amount:d} dollars on {category} this month")
 def step_category_spending(context, amount: int, category: str):
     txns = getattr(context, "_transactions", [])
+    # Monarch sign convention: expense outflows are negative amounts.
+    # The Gherkin says "spent 850 dollars" (user-facing magnitude); the mock
+    # receives -850.0 so the Rust code can apply (-amount).max(0.0) correctly.
     txns.append(
         {
             "merchant": f"{category} merchant",
-            "amount": float(amount),
+            "amount": -float(amount),
             "category": category,
+            "group_type": "expense",
             "date": "2026-05-15",
         }
     )
@@ -77,11 +81,13 @@ def step_category_spending(context, amount: int, category: str):
 def step_first_charge(context, amount: str, merchant: str, day: str):
     txns = getattr(context, "_transactions", [])
     day_num = _parse_day(day)
+    # Monarch sign convention: charges are negative outflows.
     txns.append(
         {
             "merchant": merchant,
-            "amount": float(amount),
+            "amount": -float(amount),
             "category": "Subscriptions",
+            "group_type": "expense",
             "date": f"2026-05-{day_num:02d}",
         }
     )
@@ -106,11 +112,13 @@ def step_prior_month_spending(context, amount: int):
 @given("the household has spent {amount:d} dollars this month")
 def step_this_month_spending(context, amount: int):
     txns = getattr(context, "_transactions", [])
+    # Monarch sign convention: expense outflows are negative amounts.
     txns.append(
         {
             "merchant": "Various",
-            "amount": float(amount),
+            "amount": -float(amount),
             "category": "General",
+            "group_type": "expense",
             "date": "2026-05-15",
         }
     )
@@ -124,6 +132,50 @@ def step_no_transactions(context):
     """Configure an empty transaction list — the tool must report zero spend."""
     context._transactions = []
     requests.post(f"{context.mock_base}/configure", json={"transactions": []})
+
+
+@given("the household has received {amount:d} dollars of {category} income this month")
+def step_income_transaction(context, amount: int, category: str):
+    """Configure a positive-amount income transaction.
+
+    Monarch sign convention: income inflows are positive amounts with
+    group_type='income'. The spending_report must exclude these from
+    total_spent and over_budget_categories.
+    """
+    txns = getattr(context, "_transactions", [])
+    txns.append(
+        {
+            "merchant": f"{category}",
+            "amount": float(amount),
+            "category": category,
+            "group_type": "income",
+            "date": "2026-05-15",
+        }
+    )
+    context._transactions = txns
+    requests.post(f"{context.mock_base}/configure", json={"transactions": txns})
+
+
+@given("the household has received a {amount:d} dollar refund on {category} this month")
+def step_refund_transaction(context, amount: int, category: str):
+    """Configure a positive-amount refund inside an expense category.
+
+    Monarch sign convention: refunds in expense categories have a positive
+    amount and group_type='expense'. The spending_report must treat these as
+    zero spend (no negative contribution) and must not flag them as over budget.
+    """
+    txns = getattr(context, "_transactions", [])
+    txns.append(
+        {
+            "merchant": f"{category} refund",
+            "amount": float(amount),
+            "category": category,
+            "group_type": "expense",
+            "date": "2026-05-15",
+        }
+    )
+    context._transactions = txns
+    requests.post(f"{context.mock_base}/configure", json={"transactions": txns})
 
 
 # ---------------------------------------------------------------------------
