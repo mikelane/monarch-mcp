@@ -37,6 +37,19 @@ pub struct PriorPeriodComparison {
     pub delta: f64,
 }
 
+/// A charge-and-refund pair from the same merchant, reported for advisor review.
+///
+/// Surfaced when a charge and a later refund of near-equal magnitude appear
+/// from the same merchant within N days. The pair is reported — not netted —
+/// so the advisor can explain the anomaly without hiding either transaction.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct ReversalPair {
+    pub merchant: String,
+    pub amount: f64,
+    pub charge_date: String,
+    pub refund_date: String,
+}
+
 /// The full spending report payload returned as JSON inside an MCP `CallToolResult`.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct SpendingReport {
@@ -44,6 +57,7 @@ pub struct SpendingReport {
     pub over_budget_categories: Vec<String>,
     pub by_category: HashMap<String, CategoryReport>,
     pub possible_duplicates: Vec<DuplicateCharge>,
+    pub possible_reversals: Vec<ReversalPair>,
     pub vs_prior_month: PriorPeriodComparison,
 }
 
@@ -61,9 +75,11 @@ pub fn compute_spending_report(
     let budget_map = build_budget_map(budgets);
     let category_reports = build_category_reports(&by_category, &budget_map);
     let over_budget_categories = find_over_budget_categories(&category_reports);
-    // by_category already holds positive expense magnitudes — sum them directly.
-    let total_spent: f64 = by_category.values().sum();
+    // Delegate to the shared helper so spending_report and financial_overview
+    // always agree on the definition of "true spending".
+    let total_spent = compute_true_spending(transactions);
     let possible_duplicates = find_possible_duplicates(transactions);
+    let possible_reversals = find_possible_reversals(transactions);
     let prior_period = PriorPeriodComparison {
         delta: total_spent - cashflow.prior_month_spending,
     };
@@ -73,6 +89,7 @@ pub fn compute_spending_report(
         over_budget_categories,
         by_category: category_reports,
         possible_duplicates,
+        possible_reversals,
         vs_prior_month: prior_period,
     }
 }
@@ -188,6 +205,107 @@ fn find_over_budget_categories(category_reports: &HashMap<String, CategoryReport
     over_budget
 }
 
+/// Number of days within which a charge+refund pair is considered a possible reversal.
+const REVERSAL_WINDOW_DAYS: i64 = 14;
+
+/// Parse an ISO-8601 date string ("YYYY-MM-DD") into a day count since an epoch.
+///
+/// Uses the same Gregorian algorithm as `tools.rs` — no external crate needed.
+/// Returns `None` when the string is not a valid ISO-8601 date.
+fn parse_date_to_days(date: &str) -> Option<i64> {
+    let parts: Vec<&str> = date.splitn(3, '-').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let y: i64 = parts[0].parse().ok()?;
+    let m: i64 = parts[1].parse().ok()?;
+    let d: i64 = parts[2].parse().ok()?;
+    // Civil-to-days formula (Howard Hinnant / Wikipedia proleptic Gregorian)
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+/// Find charge-and-refund pairs from the same merchant within [`REVERSAL_WINDOW_DAYS`].
+///
+/// A reversal is: one negative-amount transaction (the charge) followed by a
+/// positive-amount transaction (the refund) from the same merchant, with
+/// near-equal magnitudes, within the window. The pair is surfaced for advisor
+/// review — it is **not** netted from totals.
+///
+/// Each refund participates in at most one pair. Once a refund is matched to a
+/// charge it is marked consumed and skipped for all subsequent charges. This
+/// prevents a single refund from being reported as reversing multiple charges
+/// when a merchant issues duplicate charges with a single refund.
+fn find_possible_reversals(transactions: &[Transaction]) -> Vec<ReversalPair> {
+    let mut reversals = Vec::new();
+
+    // Separate charges (negative, expense group) from refunds (positive, expense group).
+    let charges: Vec<&Transaction> = transactions
+        .iter()
+        .filter(|t| {
+            t.amount < 0.0 && matches!(t.category.group_type.as_deref(), Some("expense") | None)
+        })
+        .collect();
+    let refunds: Vec<&Transaction> = transactions
+        .iter()
+        .filter(|t| {
+            t.amount > 0.0 && matches!(t.category.group_type.as_deref(), Some("expense") | None)
+        })
+        .collect();
+
+    // Track which refund indices have already been consumed by an earlier charge.
+    let mut consumed_refund_indices = std::collections::HashSet::new();
+
+    for charge in &charges {
+        let charge_days = match parse_date_to_days(&charge.date) {
+            Some(d) => d,
+            None => continue,
+        };
+        let charge_cents = (-charge.amount * 100.0).round() as i64;
+
+        for (refund_idx, refund) in refunds.iter().enumerate() {
+            // Skip refunds already paired with an earlier charge.
+            if consumed_refund_indices.contains(&refund_idx) {
+                continue;
+            }
+            // Same merchant (exact match)
+            if refund.merchant_name != charge.merchant_name {
+                continue;
+            }
+            // Near-equal magnitude (within 1 cent to handle float rounding)
+            let refund_cents = (refund.amount * 100.0).round() as i64;
+            if (refund_cents - charge_cents).abs() > 1 {
+                continue;
+            }
+            // Refund must come after (or same day as) the charge, within the window
+            let refund_days = match parse_date_to_days(&refund.date) {
+                Some(d) => d,
+                None => continue,
+            };
+            let gap = refund_days - charge_days;
+            if !(0..=REVERSAL_WINDOW_DAYS).contains(&gap) {
+                continue;
+            }
+
+            reversals.push(ReversalPair {
+                merchant: charge.merchant_name.clone(),
+                amount: -charge.amount, // positive magnitude
+                charge_date: charge.date.clone(),
+                refund_date: refund.date.clone(),
+            });
+            // Mark this refund consumed so no other charge can claim it.
+            consumed_refund_indices.insert(refund_idx);
+            break;
+        }
+    }
+
+    reversals
+}
+
 /// Find transactions with the same merchant, same amount, and same date.
 /// Each such group is reported as one `DuplicateCharge` entry.
 fn find_possible_duplicates(transactions: &[Transaction]) -> Vec<DuplicateCharge> {
@@ -215,6 +333,24 @@ fn find_possible_duplicates(transactions: &[Transaction]) -> Vec<DuplicateCharge
     }
 
     duplicates
+}
+
+// ---------------------------------------------------------------------------
+// Shared true-spending helper — used by both spending_report and financial_overview
+// ---------------------------------------------------------------------------
+
+/// Sum expense magnitudes across transactions, excluding income and transfer groups.
+///
+/// "True spending" = money that actually left the family. Credit card payments
+/// and transfers move money between the family's own accounts — they are
+/// inter-account movements, not consumption. Income is an inflow.
+///
+/// Classification follows the same rules as [`transaction_spend_magnitude`]:
+/// - `"expense"` group: magnitude of outflow (negative amount → positive value)
+/// - `"income"` or `"transfer"` group: 0 (excluded entirely)
+/// - `None` (unknown group): sign-based fallback — negative amounts count as spend
+pub fn compute_true_spending(transactions: &[Transaction]) -> f64 {
+    transactions.iter().map(transaction_spend_magnitude).sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +762,172 @@ mod tests {
         };
         let report = compute_spending_report(&txns, &[], &cashflow);
         assert_eq!(report.vs_prior_month.delta, -1000.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // possible_reversals — charge+refund pairs from the same merchant.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn charge_and_refund_same_merchant_within_14_days_is_paired() {
+        let txns = vec![
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-01"),
+            // Refund: positive amount in an expense category
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-10"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert_eq!(
+            report.possible_reversals.len(),
+            1,
+            "expected 1 reversal pair, got {:?}",
+            report.possible_reversals
+        );
+        assert_eq!(report.possible_reversals[0].merchant, "Banfield");
+        assert!((report.possible_reversals[0].amount - 850.0).abs() < 0.001);
+        assert_eq!(report.possible_reversals[0].charge_date, "2026-05-01");
+        assert_eq!(report.possible_reversals[0].refund_date, "2026-05-10");
+    }
+
+    #[test]
+    fn two_same_amount_charges_without_refund_are_not_paired_as_reversal() {
+        let txns = vec![
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-01"),
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-05"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert!(
+            report.possible_reversals.is_empty(),
+            "two charges (no refund) must not be paired as a reversal: {:?}",
+            report.possible_reversals
+        );
+    }
+
+    #[test]
+    fn charge_and_refund_beyond_14_days_are_not_paired() {
+        let txns = vec![
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-01"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-20"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert!(
+            report.possible_reversals.is_empty(),
+            "charge+refund beyond 14 days must not be paired: {:?}",
+            report.possible_reversals
+        );
+    }
+
+    #[test]
+    fn charge_and_refund_different_merchants_are_not_paired() {
+        let txns = vec![
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-01"),
+            make_expense_txn("VetClinic", 850.0, "Pets", "2026-05-05"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert!(
+            report.possible_reversals.is_empty(),
+            "different merchants must not be paired as a reversal: {:?}",
+            report.possible_reversals
+        );
+    }
+
+    #[test]
+    fn one_charge_and_two_equal_refunds_produces_exactly_one_reversal_pair() {
+        // One charge, two identical refunds: only the first refund is consumed.
+        // The second refund remains unmatched — there is no second charge to claim it.
+        let txns = vec![
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-01"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-05"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-06"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert_eq!(
+            report.possible_reversals.len(),
+            1,
+            "one charge + two refunds must yield exactly one reversal pair, got {:?}",
+            report.possible_reversals
+        );
+    }
+
+    #[test]
+    fn two_charges_and_two_equal_refunds_produces_two_reversal_pairs() {
+        // Two charges each get their own refund — two distinct pairs.
+        let txns = vec![
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-01"),
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-02"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-05"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-06"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert_eq!(
+            report.possible_reversals.len(),
+            2,
+            "two charges + two matching refunds must yield two reversal pairs, got {:?}",
+            report.possible_reversals
+        );
+    }
+
+    #[test]
+    fn reversal_pair_does_not_change_total_spent() {
+        // The reversal is surfaced but NOT netted from totals.
+        let txns = vec![
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-01"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-10"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        // The charge is 850 (magnitude), refund contributes 0 to spend.
+        // Total spend = 850, not 0.
+        assert_eq!(
+            report.total_spent, 850.0,
+            "reversal pair must not be netted from total_spent"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_true_spending — shared helper, tested directly.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn true_spending_sums_expense_magnitudes() {
+        let txns = vec![
+            make_expense_txn("Groceries", -365.0, "Groceries", "2026-05-10"),
+            make_expense_txn("Dining", -200.0, "Dining", "2026-05-15"),
+        ];
+        assert_eq!(compute_true_spending(&txns), 565.0);
+    }
+
+    #[test]
+    fn true_spending_excludes_income_group() {
+        let txns = vec![
+            make_income_txn("Employer", 5000.0, "Paychecks", "2026-05-01"),
+            make_expense_txn("Groceries", -365.0, "Groceries", "2026-05-10"),
+        ];
+        assert_eq!(compute_true_spending(&txns), 365.0);
+    }
+
+    #[test]
+    fn true_spending_excludes_transfer_group() {
+        let txns = vec![
+            make_transfer_txn("Chase", -3299.02, "Credit Card Payment", "2026-05-05"),
+            make_expense_txn("Groceries", -731.27, "Groceries", "2026-05-10"),
+        ];
+        let result = compute_true_spending(&txns);
+        // Only the grocery transaction should contribute
+        assert!(
+            (result - 731.27).abs() < 0.001,
+            "expected 731.27, got {result}"
+        );
+    }
+
+    #[test]
+    fn true_spending_refund_in_expense_category_contributes_zero() {
+        // A positive amount in an expense category is a refund → 0 spend
+        let txns = vec![make_expense_txn("Insurer", 50.0, "Medical", "2026-05-15")];
+        assert_eq!(compute_true_spending(&txns), 0.0);
+    }
+
+    #[test]
+    fn true_spending_empty_slice_is_zero() {
+        assert_eq!(compute_true_spending(&[]), 0.0);
     }
 
     // -----------------------------------------------------------------------
