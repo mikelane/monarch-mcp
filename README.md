@@ -58,7 +58,10 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 # PowerShell (Windows)
 irm https://github.com/mikelane/monarch-mcp/releases/latest/download/monarch-mcp-installer.ps1 | iex
 
-# Cargo (from crates.io)
+# Cargo, prebuilt binary — no compile (fetches the release artifacts)
+cargo binstall monarch-mcp
+
+# Cargo (from crates.io) — compiles from source
 cargo install monarch-mcp
 
 # Or build from source
