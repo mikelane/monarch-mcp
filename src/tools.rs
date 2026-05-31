@@ -5,6 +5,7 @@ use crate::client::MonarchClient;
 use crate::error::MonarchError;
 use crate::financial_overview::compute_overview;
 use crate::goals::Goals;
+use crate::inspect_transactions::{compute_inspection, InspectFilter};
 use crate::net_worth_trend::compute_trend;
 use crate::progress_vs_goals::compute_progress;
 use crate::recurring_scan::compute_scan;
@@ -35,6 +36,36 @@ pub struct ApplyChangesetParams {
     /// List of change entries to apply. Each entry may include id, category, tags, notes.
     /// Entries containing forbidden fields (e.g. amount) are rejected and reported.
     pub changes: Vec<serde_json::Value>,
+}
+
+/// Input parameters for the `inspect_transactions` tool.
+///
+/// All fields are optional. Omitting a field means "no filter on that dimension".
+/// If neither `start_date` nor `end_date` is provided, the current calendar month
+/// is used. To re-categorize a transaction found here, pass its `id` to
+/// `apply_changeset`:
+///
+/// ```text
+/// Step 1: inspect_transactions(category="Pets")
+///   → [{id:"txn-abc", merchant:"Petco", amount:-12000.00, ...}, ...]
+///
+/// Step 2: apply_changeset(changes=[{id:"txn-abc", category:"Veterinary"}])
+///   → applies the recategorization
+/// ```
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct InspectTransactionsParams {
+    /// Filter to transactions whose category name contains this substring
+    /// (case-insensitive). Example: "Pets" matches "Pets", "Pet Supplies".
+    pub category: Option<String>,
+    /// Filter to transactions whose merchant name contains this substring
+    /// (case-insensitive). Example: "Petco" matches "Petco Store #42".
+    pub merchant: Option<String>,
+    /// Start of the date range (ISO-8601, e.g. "2026-04-01").
+    /// Defaults to the first day of the current month when omitted.
+    pub start_date: Option<String>,
+    /// End of the date range (ISO-8601, e.g. "2026-04-30").
+    /// Defaults to the last day of the current month when omitted.
+    pub end_date: Option<String>,
 }
 
 #[derive(Clone)]
@@ -264,6 +295,47 @@ impl MonarchTools {
     }
 
     #[tool(
+        description = "Drill into transactions for a date range, optionally narrowed by \
+        category and/or merchant. Returns every matching transaction including its \
+        **id** (required by apply_changeset to re-categorize), plus a compound summary \
+        with total count, net amount, and an inflow-vs-outflow split so refunds are \
+        visible alongside charges.\n\n\
+        Two-step re-categorization workflow:\n\
+        1. Call inspect_transactions(category=\"Pets\") to see all Pets transactions \
+           with their ids and amounts.\n\
+        2. Call apply_changeset(changes=[{\"id\": \"<id>\", \"category\": \"Veterinary\"}]) \
+           to correct any mis-categorized entry.\n\n\
+        This tool is read-only: it never modifies data. Use it to diagnose anomalies \
+        (e.g. a $12k Pets spike or a $3.3k Medical charge) or to surface ids for \
+        already-categorized transactions that need correction via apply_changeset."
+    )]
+    async fn inspect_transactions(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+        Parameters(params): Parameters<InspectTransactionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_inspection(&client, params).await {
+            Ok(result) => serde_json::to_value(&result)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
         description = "Measure actual finances against the household's remembered goals \
         (savings rate, emergency-fund runway, debt payoff). Reports each goal as \
         on-track, drifting, or off, with the lever to pull."
@@ -448,6 +520,24 @@ async fn fetch_and_compute_scan(
     Ok(compute_scan(&items))
 }
 
+async fn fetch_and_compute_inspection(
+    client: &MonarchClient,
+    params: InspectTransactionsParams,
+) -> Result<crate::inspect_transactions::InspectionResult, MonarchError> {
+    let (default_start, default_end) = current_month_range();
+    let start = params.start_date.unwrap_or(default_start);
+    let end = params.end_date.unwrap_or(default_end);
+
+    let transactions = client.get_transactions(&start, &end, 500).await?;
+
+    let filter = InspectFilter {
+        category: params.category,
+        merchant: params.merchant,
+    };
+
+    Ok(compute_inspection(&transactions, &filter))
+}
+
 async fn fetch_and_compute_forecast(
     client: &MonarchClient,
 ) -> Result<crate::cashflow_forecast::ForecastResult, MonarchError> {
@@ -558,7 +648,8 @@ impl ServerHandler for MonarchTools {
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
                 "Monarch Money budgeting advisor. Tools: financial_overview, \
-             spending_report, triage_uncategorized, progress_vs_goals, \
+             spending_report, triage_uncategorized, inspect_transactions, \
+             apply_changeset, progress_vs_goals, \
              cashflow_forecast, net_worth_trend, recurring_scan."
                     .to_string(),
             )

@@ -38,6 +38,7 @@ def step_assert_reauth_required(context):
         getattr(context, "overview_result", None)
         or getattr(context, "spending_result", None)
         or getattr(context, "triage_result", None)
+        or getattr(context, "inspect_result", None)
         or getattr(context, "progress_result", None)
         or getattr(context, "forecast_result", None)
         or getattr(context, "trend_result", None)

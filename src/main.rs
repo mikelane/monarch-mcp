@@ -15,6 +15,7 @@ mod client;
 mod error;
 mod financial_overview;
 mod goals;
+mod inspect_transactions;
 mod net_worth_trend;
 mod progress_vs_goals;
 mod recurring_scan;
