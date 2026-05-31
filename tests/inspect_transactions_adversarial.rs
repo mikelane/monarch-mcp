@@ -5,13 +5,16 @@
 //! boundary values, empty-string filters, sign-convention edges, substring
 //! false-positives, and the refund/charge split.
 //!
-//! The headline finding is the **empty-string filter**: a `category` (or
-//! `merchant`) filter of `""` matches EVERY transaction because substring
-//! containment of the empty string is always true. The tool handler in
-//! `tools.rs` maps `params.category` straight into `InspectFilter.category`
-//! without coercing `""` to `None` (contrast `MONARCH_BASE`, which IS coerced
-//! via `.filter(|s| !s.is_empty())`). A caller that sends `category=""` gets a
-//! whole-account dump presented as a single-category inspection.
+//! The original headline finding was the **empty-string filter**: a `category`
+//! (or `merchant`) filter of `""` matched EVERY transaction because substring
+//! containment of the empty string is always true, presenting a whole-account
+//! dump as a single-category inspection. That bug is now **fixed** — an empty
+//! or whitespace-only needle is coerced to "no constraint" inside
+//! `matches_filter` (see the `needle.is_empty()` guard in
+//! `src/inspect_transactions.rs`). The empty/whitespace-filter tests below pin
+//! the fixed contract: `Some("")` is transparent and behaves exactly like
+//! `None`, so a regression that re-introduced the whole-account dump (or the
+//! opposite wrong fix — returning zero results) would fail here.
 
 use monarch_mcp::client::{Category, Transaction};
 use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
@@ -143,6 +146,8 @@ fn zero_amount_is_counted_but_does_not_distort_split() {
     assert_eq!(r.summary.total_count, 3);
     assert!((r.summary.total_inflow - 25.0).abs() < 1e-9);
     assert!((r.summary.total_outflow - 100.0).abs() < 1e-9);
+    // The zero-amount line must not perturb the net: 25 - 100 = -75.
+    assert!((r.summary.net_amount - (-75.0)).abs() < 1e-9);
 }
 
 #[test]

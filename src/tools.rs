@@ -5,7 +5,7 @@ use crate::client::MonarchClient;
 use crate::error::MonarchError;
 use crate::financial_overview::compute_overview;
 use crate::goals::Goals;
-use crate::inspect_transactions::{compute_inspection, InspectFilter};
+use crate::inspect_transactions::{blank_to_none, compute_inspection, InspectFilter};
 use crate::net_worth_trend::compute_trend;
 use crate::progress_vs_goals::compute_progress;
 use crate::recurring_scan::compute_scan;
@@ -525,18 +525,18 @@ async fn fetch_and_compute_inspection(
     params: InspectTransactionsParams,
 ) -> Result<crate::inspect_transactions::InspectionResult, MonarchError> {
     let (default_start, default_end) = current_month_range();
-    let start = params.start_date.unwrap_or(default_start);
-    let end = params.end_date.unwrap_or(default_end);
+
+    // Coerce empty/whitespace-only strings to None uniformly across all params
+    // so that `start_date=""` falls back to the month default just like
+    // omitting it, and `category=""` / `merchant=""` impose no filter constraint.
+    let start = blank_to_none(params.start_date).unwrap_or(default_start);
+    let end = blank_to_none(params.end_date).unwrap_or(default_end);
 
     let transactions = client.get_transactions(&start, &end, 500).await?;
 
-    // Coerce empty/whitespace-only strings to None so `category=""` behaves
-    // identically to omitting the filter — both return all transactions in the
-    // date range rather than a misleading "scoped" view that is actually the
-    // whole account.
     let filter = InspectFilter {
-        category: params.category.filter(|s| !s.trim().is_empty()),
-        merchant: params.merchant.filter(|s| !s.trim().is_empty()),
+        category: blank_to_none(params.category),
+        merchant: blank_to_none(params.merchant),
     };
 
     Ok(compute_inspection(&transactions, &filter))

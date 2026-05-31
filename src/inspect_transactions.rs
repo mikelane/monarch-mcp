@@ -89,6 +89,19 @@ pub struct InspectionResult {
 }
 
 // ---------------------------------------------------------------------------
+// Helper
+// ---------------------------------------------------------------------------
+
+/// Coerces an empty or whitespace-only `Some` value to `None`.
+///
+/// This ensures that `blank_to_none(Some(""))` and `blank_to_none(Some("  "))`
+/// behave identically to `None` — no filter on that dimension — rather than
+/// silently matching every transaction via `"".contains("")`.
+pub fn blank_to_none(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.trim().is_empty())
+}
+
+// ---------------------------------------------------------------------------
 // Pure computation — no I/O
 // ---------------------------------------------------------------------------
 
@@ -132,8 +145,8 @@ fn matches_filter(txn: &Transaction, filter: &InspectFilter) -> bool {
     // An empty or whitespace-only needle is treated as "no constraint" —
     // `"".contains("")` is always true, which would silently match every
     // transaction and present a whole-account dump as a category inspection.
-    if let Some(cat) = &filter.category {
-        let needle = cat.trim();
+    if let Some(category_needle) = &filter.category {
+        let needle = category_needle.trim();
         if !needle.is_empty()
             && !txn
                 .category
@@ -144,8 +157,8 @@ fn matches_filter(txn: &Transaction, filter: &InspectFilter) -> bool {
             return false;
         }
     }
-    if let Some(merch) = &filter.merchant {
-        let needle = merch.trim();
+    if let Some(merchant_needle) = &filter.merchant {
+        let needle = merchant_needle.trim();
         if !needle.is_empty()
             && !txn
                 .merchant_name
@@ -187,6 +200,30 @@ fn compute_summary(items: &[InspectLineItem]) -> InspectSummary {
 
 #[cfg(test)]
 mod tests {
+    use super::blank_to_none;
+
+    // -----------------------------------------------------------------------
+    // 9a RED: blank_to_none helper coerces empty/whitespace to None
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn blank_to_none_coerces_empty_string_to_none() {
+        assert_eq!(blank_to_none(Some(String::new())), None);
+    }
+
+    #[test]
+    fn blank_to_none_coerces_whitespace_only_to_none() {
+        assert_eq!(blank_to_none(Some("  ".to_string())), None);
+    }
+
+    #[test]
+    fn blank_to_none_preserves_non_blank_value() {
+        assert_eq!(
+            blank_to_none(Some("Pets".to_string())),
+            Some("Pets".to_string())
+        );
+    }
+
     use super::*;
     use crate::client::{Category, Transaction};
 
