@@ -24,7 +24,7 @@ rmcp = { version = "1.7.0", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
-schemars = "0.8"
+schemars = "1.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
