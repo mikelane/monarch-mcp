@@ -33,6 +33,7 @@
 
 use monarch_mcp::client::MonarchClient;
 use monarch_mcp::financial_overview::compute_overview;
+use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
 use monarch_mcp::net_worth_trend::compute_trend;
 use monarch_mcp::recurring_scan::compute_scan;
 use std::env;
@@ -477,6 +478,121 @@ async fn budgets_return_valid_structure_from_real_monarch() {
             "budget amount must be finite and nonzero (zero budgets are filtered), got {} for {}",
             b.amount,
             b.category.name
+        );
+    }
+}
+
+/// Verify that `inspect_transactions` works end-to-end against real Monarch:
+/// - `get_transactions` returns data with non-empty ids and finite amounts.
+/// - `compute_inspection` with no filter returns all transactions and produces
+///   finite summary values with correct inflow/outflow split.
+/// - `compute_inspection` with a category filter returns only matching
+///   transactions (category name substring match is case-insensitive).
+///
+/// Does NOT assert specific merchants, amounts, or categories — those change
+/// daily. Asserts structural validity and filtering semantics only.
+#[tokio::test]
+async fn inspect_transactions_returns_valid_structure_from_real_monarch() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+
+    let transactions = client
+        .get_transactions(&cur_start, &cur_end, 200)
+        .await
+        .expect("GetTransactionsList must succeed against real Monarch");
+
+    eprintln!("transactions this month: {}", transactions.len());
+
+    // Structural validity: every transaction has a non-empty id and finite amount.
+    for t in &transactions {
+        assert!(!t.id.is_empty(), "transaction id must not be empty");
+        assert!(
+            t.amount.is_finite(),
+            "amount must be finite for id {} merchant {:?}",
+            t.id,
+            t.merchant_name
+        );
+    }
+
+    // No-filter inspection returns all transactions with correct totals.
+    let no_filter = InspectFilter::default();
+    let result = compute_inspection(&transactions, &no_filter);
+
+    assert_eq!(
+        result.summary.total_count,
+        transactions.len(),
+        "total_count must equal number of transactions fetched"
+    );
+    assert!(
+        result.summary.net_amount.is_finite(),
+        "net_amount must be finite"
+    );
+    assert!(
+        result.summary.total_inflow >= 0.0,
+        "total_inflow must be non-negative, got {}",
+        result.summary.total_inflow
+    );
+    assert!(
+        result.summary.total_outflow >= 0.0,
+        "total_outflow must be non-negative, got {}",
+        result.summary.total_outflow
+    );
+    // Inflow + outflow must round-trip to the same magnitude as computing
+    // the net directly (within floating-point tolerance).
+    let expected_net = result.summary.total_inflow - result.summary.total_outflow;
+    assert!(
+        (result.summary.net_amount - expected_net).abs() < 0.01,
+        "net_amount ({}) must equal total_inflow - total_outflow ({})",
+        result.summary.net_amount,
+        expected_net
+    );
+
+    // Every line item must carry a non-empty id (the apply_changeset input).
+    for item in &result.transactions {
+        assert!(!item.id.is_empty(), "line item id must not be empty");
+        assert!(!item.date.is_empty(), "line item date must not be empty");
+        assert!(item.amount.is_finite(), "line item amount must be finite");
+    }
+
+    eprintln!(
+        "no-filter: count={} net={:.2} inflow={:.2} outflow={:.2}",
+        result.summary.total_count,
+        result.summary.net_amount,
+        result.summary.total_inflow,
+        result.summary.total_outflow
+    );
+
+    // Category-filtered inspection: pick the first category that appears in
+    // the transactions and verify the filter narrows correctly.
+    if let Some(first_category) = transactions.first().map(|t| t.category.name.clone()) {
+        let cat_filter = InspectFilter {
+            category: Some(first_category.clone()),
+            merchant: None,
+        };
+        let filtered = compute_inspection(&transactions, &cat_filter);
+
+        // Every result transaction must match the category filter.
+        for item in &filtered.transactions {
+            assert!(
+                item.category
+                    .to_lowercase()
+                    .contains(&first_category.to_lowercase()),
+                "filtered item category {:?} must contain {:?}",
+                item.category,
+                first_category
+            );
+        }
+
+        eprintln!(
+            "category filter {:?}: {} of {} transactions match",
+            first_category,
+            filtered.summary.total_count,
+            transactions.len()
         );
     }
 }
