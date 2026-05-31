@@ -14,8 +14,10 @@ use serde::Serialize;
 
 /// The result payload returned as JSON by `progress_vs_goals`.
 /// Only fields for goals that have been set are present.
-/// When no goals are configured, `guidance` is set instead so first-run
-/// users receive helpful direction rather than a silent empty response.
+/// `guidance` is set whenever no *computable* goal produced output — either
+/// because no goals are configured at all, or because only goals whose progress
+/// tracking is not yet implemented (e.g. debt-payoff, tracked in #27) are set.
+/// This prevents the payload from ever serializing to a silent empty object `{}`.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct GoalsProgress {
     /// Savings-rate goal progress — present only when the goal is set.
@@ -26,7 +28,9 @@ pub struct GoalsProgress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub emergency_fund: Option<GoalStatus>,
 
-    /// Set when no goals have been configured — explains how to add them.
+    /// Set when no computable goal produced output — explains next steps.
+    /// Also fires when only goals with deferred computation (e.g. debt-payoff)
+    /// are configured, so the wording adapts to avoid falsely claiming "no goals".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guidance: Option<String>,
 }
@@ -127,14 +131,22 @@ pub fn compute_progress(goals: &Goals, accounts: &[Account], cashflow: &Cashflow
         }
     });
 
-    let no_goals_configured = goals.savings_rate.is_none()
-        && goals.emergency_fund.is_none()
-        && goals.debt_payoff.is_none();
-
-    let guidance = no_goals_configured.then(|| {
-        "No goals configured yet. Add a goals.toml file and set \
-         MONARCH_GOALS_FILE to its path to start tracking progress."
-            .to_string()
+    // guidance fires whenever neither computable goal is set, so the payload is
+    // never a silent empty object. Wording adapts when a debt-payoff goal is set
+    // (its progress is not computed yet — tracked in #27) so we don't falsely
+    // claim "no goals configured".
+    let no_visible_progress = savings_rate.is_none() && emergency_fund.is_none();
+    let guidance = no_visible_progress.then(|| {
+        if goals.debt_payoff.is_some() {
+            "A debt-payoff goal is configured, but debt-payoff progress tracking is \
+             not available yet (tracked in #27). Set a savings-rate or emergency-fund \
+             goal to see progress now."
+                .to_string()
+        } else {
+            "No goals configured yet. Add a goals.toml file and set \
+             MONARCH_GOALS_FILE to its path to start tracking progress."
+                .to_string()
+        }
     });
 
     GoalsProgress {
@@ -507,6 +519,44 @@ mod tests {
         assert!(
             result.guidance.is_none(),
             "guidance should be absent when goals are configured"
+        );
+    }
+
+    // --- debt-payoff-only config: guidance present, mentions debt / #27 ---
+
+    #[test]
+    fn debt_payoff_only_config_yields_guidance_mentioning_debt() {
+        use crate::goals::DebtPayoffGoal;
+        let goals = Goals {
+            savings_rate: None,
+            emergency_fund: None,
+            debt_payoff: Some(DebtPayoffGoal {
+                target_date: "2027-12-01".to_string(),
+                monthly_payment: Some(500.0),
+            }),
+        };
+        let cf = cashflow(10000.0, 8000.0);
+        let result = compute_progress(&goals, &[], &cf);
+        let guidance = result
+            .guidance
+            .as_deref()
+            .expect("guidance must be Some for debt-only config");
+        assert!(
+            guidance.contains("debt") || guidance.contains("#27"),
+            "guidance for debt-only config must mention debt or #27, got: {guidance:?}"
+        );
+    }
+
+    // --- savings-only config: guidance absent (savings_rate is computable) ---
+
+    #[test]
+    fn savings_rate_only_config_has_no_guidance() {
+        let goals = goals_with_savings_rate(20.0);
+        let cf = cashflow(10000.0, 8000.0);
+        let result = compute_progress(&goals, &[], &cf);
+        assert!(
+            result.guidance.is_none(),
+            "guidance must be absent when savings_rate goal is set"
         );
     }
 
