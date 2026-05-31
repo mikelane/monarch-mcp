@@ -199,12 +199,38 @@ mod tests {
         );
     }
 
-    // --- TRIANGULATE: missing file returns GoalsFile error ---
+    // --- RED: missing file returns default Goals (not an error) ---
 
     #[test]
-    fn missing_file_returns_goals_file_error() {
-        let err = Goals::load_from_path(Path::new("/nonexistent/goals.toml")).unwrap_err();
-        assert!(matches!(err, MonarchError::GoalsFile(_)));
+    fn missing_goals_file_returns_default() {
+        let goals = Goals::load_from_path(Path::new("/nonexistent/goals.toml")).unwrap();
+        assert_eq!(goals, Goals::default());
+    }
+
+    // --- RED: permission-denied still returns a GoalsFile error ---
+
+    #[test]
+    fn permission_denied_goals_file_returns_error() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        // Skip this test when running as root — root bypasses file permissions
+        let uid_output = Command::new("id").arg("-u").output().unwrap();
+        let uid_str = String::from_utf8_lossy(&uid_output.stdout);
+        if uid_str.trim() == "0" {
+            return;
+        }
+
+        let f = write_goals_file("[savings_rate]\ntarget_percent = 20.0\n");
+        let path = f.path().to_path_buf();
+        // Seal the file so even the owner cannot read it
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let err = Goals::load_from_path(&path).unwrap_err();
+        assert!(
+            matches!(err, MonarchError::GoalsFile(_)),
+            "expected GoalsFile error for permission-denied, got: {err:?}"
+        );
     }
 
     // --- load_from_env: unset returns default ---
