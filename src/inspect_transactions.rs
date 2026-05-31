@@ -32,13 +32,21 @@ use serde::Serialize;
 /// Optional filters for narrowing the transaction list.
 ///
 /// All fields are optional. `None` means "no filter on this dimension".
+/// An empty or whitespace-only string is treated identically to `None` —
+/// it imposes no constraint on that dimension. This invariant is enforced
+/// at both the handler boundary (`fetch_and_compute_inspection`) and inside
+/// `matches_filter`, so callers that pass `Some("")` get the same result as
+/// callers that pass `None`.
+///
 /// If no `start_date`/`end_date` is provided the handler defaults to the
 /// current calendar month.
 #[derive(Debug, Default)]
 pub struct InspectFilter {
     /// Substring match on category name (case-insensitive).
+    /// `None` or an empty/whitespace-only value means "no constraint".
     pub category: Option<String>,
     /// Substring match on merchant name (case-insensitive).
+    /// `None` or an empty/whitespace-only value means "no constraint".
     pub merchant: Option<String>,
 }
 
@@ -121,21 +129,28 @@ pub fn compute_inspection(
 }
 
 fn matches_filter(txn: &Transaction, filter: &InspectFilter) -> bool {
+    // An empty or whitespace-only needle is treated as "no constraint" —
+    // `"".contains("")` is always true, which would silently match every
+    // transaction and present a whole-account dump as a category inspection.
     if let Some(cat) = &filter.category {
-        if !txn
-            .category
-            .name
-            .to_lowercase()
-            .contains(&cat.to_lowercase())
+        let needle = cat.trim();
+        if !needle.is_empty()
+            && !txn
+                .category
+                .name
+                .to_lowercase()
+                .contains(&needle.to_lowercase())
         {
             return false;
         }
     }
     if let Some(merch) = &filter.merchant {
-        if !txn
-            .merchant_name
-            .to_lowercase()
-            .contains(&merch.to_lowercase())
+        let needle = merch.trim();
+        if !needle.is_empty()
+            && !txn
+                .merchant_name
+                .to_lowercase()
+                .contains(&needle.to_lowercase())
         {
             return false;
         }

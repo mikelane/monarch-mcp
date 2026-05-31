@@ -530,9 +530,13 @@ async fn fetch_and_compute_inspection(
 
     let transactions = client.get_transactions(&start, &end, 500).await?;
 
+    // Coerce empty/whitespace-only strings to None so `category=""` behaves
+    // identically to omitting the filter — both return all transactions in the
+    // date range rather than a misleading "scoped" view that is actually the
+    // whole account.
     let filter = InspectFilter {
-        category: params.category,
-        merchant: params.merchant,
+        category: params.category.filter(|s| !s.trim().is_empty()),
+        merchant: params.merchant.filter(|s| !s.trim().is_empty()),
     };
 
     Ok(compute_inspection(&transactions, &filter))
