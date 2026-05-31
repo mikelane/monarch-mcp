@@ -127,8 +127,9 @@ pub fn compute_progress(goals: &Goals, accounts: &[Account], cashflow: &Cashflow
         }
     });
 
-    let no_goals_configured =
-        goals.savings_rate.is_none() && goals.emergency_fund.is_none() && goals.debt_payoff.is_none();
+    let no_goals_configured = goals.savings_rate.is_none()
+        && goals.emergency_fund.is_none()
+        && goals.debt_payoff.is_none();
 
     let guidance = no_goals_configured.then(|| {
         "No goals configured yet. Add a goals.toml file and set \
