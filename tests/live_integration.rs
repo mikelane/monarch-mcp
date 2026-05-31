@@ -159,10 +159,20 @@ async fn financial_overview_returns_real_net_worth() {
         history.prior_month_net_worth
     );
 
-    let overview = compute_overview(&accounts, &cashflow, &history);
+    let transactions = client
+        .get_transactions(&cur_start, &cur_end, 500)
+        .await
+        .expect("GetTransactionsList must succeed against real Monarch");
+    eprintln!("transactions this month: {}", transactions.len());
+
+    let overview = compute_overview(&accounts, &cashflow, &transactions, &history);
     eprintln!("net_worth: {:.2}", overview.net_worth);
     eprintln!("net_worth_change: {:.2}", overview.net_worth_change);
     eprintln!("cashflow.net: {:.2}", overview.cashflow.net);
+    eprintln!(
+        "overview.cashflow.spending (true spending): {:.2}",
+        overview.cashflow.spending
+    );
 
     assert!(
         overview.net_worth.is_finite(),
@@ -539,29 +549,20 @@ async fn spending_report_excludes_income_and_uses_correct_sign_convention() {
         );
     }
 
-    // 3. Soft cross-check: spending_report.total_spent must be within a 3×
-    //    factor of financial_overview.spending (cashflow.spending).
-    //    Both should reflect expense outflows for the same period.
-    //    A gross mismatch (e.g. 10× difference) indicates income was counted.
-    //    We allow 3× slack because cashflow aggregates differently than
-    //    per-transaction sums (pending transactions, rounding, etc.).
-    //    Skip this check when either value is zero (early in the month).
-    if report.total_spent > 0.0 && cashflow.spending > 0.0 {
-        let ratio = report.total_spent / cashflow.spending;
-        assert!(
-            (0.1..=3.0).contains(&ratio),
-            "spending_report.total_spent ({:.2}) is more than 3× away from \
-             financial_overview.spending ({:.2}); ratio = {:.2}. \
-             This likely indicates income transactions are inflating total_spent.",
-            report.total_spent,
-            cashflow.spending,
-            ratio
-        );
-        eprintln!(
-            "spending ratio (total_spent / cashflow.spending): {:.2}",
-            ratio
-        );
-    }
+    // 3. Exact agreement: spending_report.total_spent and financial_overview.spending
+    //    both call compute_true_spending with the same transaction slice.
+    //    They must be byte-identical (same function, same inputs, no divergence).
+    let true_spending = monarch_mcp::spending_report::compute_true_spending(&transactions);
+    assert_eq!(
+        report.total_spent, true_spending,
+        "spending_report.total_spent ({:.2}) must equal compute_true_spending ({:.2}) \
+         — the report delegates to this helper directly",
+        report.total_spent, true_spending
+    );
+    eprintln!(
+        "agreement confirmed: total_spent = compute_true_spending = {:.2}",
+        report.total_spent
+    );
 }
 
 /// Verify that GetJointPlanningData returns budget entries with valid

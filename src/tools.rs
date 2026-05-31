@@ -464,12 +464,18 @@ async fn fetch_and_compute(
     let (cur_start, cur_end) = current_month_range();
     let (pri_start, pri_end) = prior_month_range();
 
-    let (accounts, cashflow, history) = tokio::try_join!(
+    let (accounts, cashflow, transactions, history) = tokio::try_join!(
         client.get_accounts(),
         client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
+        client.get_transactions(&cur_start, &cur_end, 500),
         client.get_net_worth_history(&pri_start, &pri_end),
     )?;
-    Ok(compute_overview(&accounts, &cashflow, &history))
+    Ok(compute_overview(
+        &accounts,
+        &cashflow,
+        &transactions,
+        &history,
+    ))
 }
 
 async fn fetch_and_compute_spending(
