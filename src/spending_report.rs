@@ -235,6 +235,11 @@ fn parse_date_to_days(date: &str) -> Option<i64> {
 /// positive-amount transaction (the refund) from the same merchant, with
 /// near-equal magnitudes, within the window. The pair is surfaced for advisor
 /// review — it is **not** netted from totals.
+///
+/// Each refund participates in at most one pair. Once a refund is matched to a
+/// charge it is marked consumed and skipped for all subsequent charges. This
+/// prevents a single refund from being reported as reversing multiple charges
+/// when a merchant issues duplicate charges with a single refund.
 fn find_possible_reversals(transactions: &[Transaction]) -> Vec<ReversalPair> {
     let mut reversals = Vec::new();
 
@@ -252,6 +257,9 @@ fn find_possible_reversals(transactions: &[Transaction]) -> Vec<ReversalPair> {
         })
         .collect();
 
+    // Track which refund indices have already been consumed by an earlier charge.
+    let mut consumed_refund_indices = std::collections::HashSet::new();
+
     for charge in &charges {
         let charge_days = match parse_date_to_days(&charge.date) {
             Some(d) => d,
@@ -259,7 +267,11 @@ fn find_possible_reversals(transactions: &[Transaction]) -> Vec<ReversalPair> {
         };
         let charge_cents = (-charge.amount * 100.0).round() as i64;
 
-        for refund in &refunds {
+        for (refund_idx, refund) in refunds.iter().enumerate() {
+            // Skip refunds already paired with an earlier charge.
+            if consumed_refund_indices.contains(&refund_idx) {
+                continue;
+            }
             // Same merchant (exact match)
             if refund.merchant_name != charge.merchant_name {
                 continue;
@@ -285,7 +297,8 @@ fn find_possible_reversals(transactions: &[Transaction]) -> Vec<ReversalPair> {
                 charge_date: charge.date.clone(),
                 refund_date: refund.date.clone(),
             });
-            // Match at most one refund per charge
+            // Mark this refund consumed so no other charge can claim it.
+            consumed_refund_indices.insert(refund_idx);
             break;
         }
     }
@@ -813,6 +826,42 @@ mod tests {
         assert!(
             report.possible_reversals.is_empty(),
             "different merchants must not be paired as a reversal: {:?}",
+            report.possible_reversals
+        );
+    }
+
+    #[test]
+    fn one_charge_and_two_equal_refunds_produces_exactly_one_reversal_pair() {
+        // One charge, two identical refunds: only the first refund is consumed.
+        // The second refund remains unmatched — there is no second charge to claim it.
+        let txns = vec![
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-01"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-05"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-06"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert_eq!(
+            report.possible_reversals.len(),
+            1,
+            "one charge + two refunds must yield exactly one reversal pair, got {:?}",
+            report.possible_reversals
+        );
+    }
+
+    #[test]
+    fn two_charges_and_two_equal_refunds_produces_two_reversal_pairs() {
+        // Two charges each get their own refund — two distinct pairs.
+        let txns = vec![
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-01"),
+            make_expense_txn("Banfield", -850.0, "Pets", "2026-05-02"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-05"),
+            make_expense_txn("Banfield", 850.0, "Pets", "2026-05-06"),
+        ];
+        let report = compute_spending_report(&txns, &[], &zero_cashflow());
+        assert_eq!(
+            report.possible_reversals.len(),
+            2,
+            "two charges + two matching refunds must yield two reversal pairs, got {:?}",
             report.possible_reversals
         );
     }
