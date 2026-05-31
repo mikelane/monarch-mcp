@@ -50,7 +50,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       # behave launches ../target/debug/monarch-mcp against the in-repo mock Monarch
       # server. The large/live tier (MONARCH_LIVE=1) is intentionally NOT run in CI.
       - run: uv run behave
