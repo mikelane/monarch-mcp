@@ -41,6 +41,12 @@ Layers, each independently testable (`src/`):
 **Pattern for a new tool:** pure `compute_x(fetched_data) -> Result` (TDD'd) + a thin handler
 in `tools.rs` that fetches and calls it. Follow an existing tool.
 
+**Date arithmetic note:** `chrono` is a direct `[dependencies]` entry (feature `clock` only,
+`default-features = false`). It is used solely in `today_epoch_day()` to obtain the current
+date in the host's local timezone so "this month" matches what the user sees locally (ADR 0006).
+All month/range arithmetic (`civil_to_epoch_day`, `epoch_days_to_ymd`, `days_in_month`,
+`*_for_day`) remains hand-rolled and free of I/O — keep it that way.
+
 ## The test pyramid (non-negotiable)
 
 We require a real [Google test-size mix](https://testing.googleblog.com/2010/12/test-sizes.html)
