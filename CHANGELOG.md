@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/mikelane/monarch-mcp/compare/v0.1.1...v0.2.0) - 2026-06-01
+
+### Added
+
+- add inspect_transactions advisor tool with drill-down and re-categorization ([#29](https://github.com/mikelane/monarch-mcp/pull/29))
+
+### Cleanups
+
+- dedupe date helpers, drop vestigial fetch, purge mock dead code ([#26](https://github.com/mikelane/monarch-mcp/pull/26)) ([#35](https://github.com/mikelane/monarch-mcp/pull/35))
+
+### Documentation
+
+- rename duplicate v0.1.0 changelog '### Added' prose block to '### Overview' ([#19](https://github.com/mikelane/monarch-mcp/pull/19))
+
+### Fixed
+
+- compute true spending from transactions in both tools; surface refund pairs ([#32](https://github.com/mikelane/monarch-mcp/pull/32))
+- honor Monarch sign convention in spending_report (expenses are negative) ([#31](https://github.com/mikelane/monarch-mcp/pull/31))
+- treat missing goals file as no goals configured ([#28](https://github.com/mikelane/monarch-mcp/pull/28))
+
 ### Fixed
 
 - `progress_vs_goals` no longer crashes with MCP error -32603 when `MONARCH_GOALS_FILE`
