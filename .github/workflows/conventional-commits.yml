@@ -1,0 +1,84 @@
+name: Conventional Commits
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: conventional-commits-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege — no write access needed.
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    name: PR title is Conventional Commits
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # keep in sync with release-plz.toml commit_parsers
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            chore
+            style
+            ci
+            build
+            revert
+          requireScope: false
+          subjectPattern: ^.+$
+
+  commits:
+    name: All commits are Conventional Commits
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Validate commit subjects
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # keep in sync with release-plz.toml commit_parsers
+          PATTERN='^(feat|fix|perf|refactor|docs|test|chore|style|ci|build|revert)(\([a-z0-9._/-]+\))?!?: .+'
+
+          violations=()
+          while IFS= read -r subject; do
+            if [ -z "$subject" ]; then
+              continue
+            fi
+            if ! echo "$subject" | grep -qE "$PATTERN"; then
+              violations+=("  - $subject")
+            fi
+          done < <(git log --no-merges --format=%s "$BASE_SHA".."$HEAD_SHA")
+
+          if [ ${#violations[@]} -gt 0 ]; then
+            echo "ERROR: The following commit subjects do not follow Conventional Commits:"
+            printf '%s\n' "${violations[@]}"
+            echo ""
+            echo "Expected format: <type>(<optional scope>)<optional !>: <description>"
+            echo ""
+            echo "Allowed types: feat | fix | perf | refactor | docs | test | chore | style | ci | build | revert"
+            echo ""
+            echo "Examples:"
+            echo "  feat: add spending report"
+            echo "  fix(client): handle 401 gracefully"
+            echo "  refactor!: rename tool parameter"
+            exit 1
+          fi
+
+          echo "All commit subjects follow Conventional Commits."
