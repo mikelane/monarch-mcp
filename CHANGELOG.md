@@ -6,11 +6,27 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/mikelane/monarch-mcp/compare/v0.1.1...v0.2.0) - 2026-06-01
+
+### Added
+
+- add inspect_transactions advisor tool with drill-down and re-categorization ([#29](https://github.com/mikelane/monarch-mcp/pull/29))
+
+### Changed
+
+- dedupe date helpers, drop vestigial fetch, purge mock dead code ([#26](https://github.com/mikelane/monarch-mcp/pull/26)) ([#35](https://github.com/mikelane/monarch-mcp/pull/35))
+
+### Documentation
+
+- rename duplicate v0.1.0 changelog '### Added' prose block to '### Overview' ([#19](https://github.com/mikelane/monarch-mcp/pull/19))
+
 ### Fixed
 
-- `progress_vs_goals` no longer crashes with MCP error -32603 when `MONARCH_GOALS_FILE`
-  points at a path that does not exist yet. First-run users now receive a helpful
-  guidance message explaining how to create a goals.toml file ([#22](https://github.com/mikelane/monarch-mcp/issues/22))
+- reckon month boundaries in the host's local timezone so the monthly tools no longer mislabel the current month late on the last day of a month for users behind UTC ([#36](https://github.com/mikelane/monarch-mcp/pull/38))
+- make datetime handling deterministic and hermetic, fixing a flaky prior-month spending delta at month boundaries ([#34](https://github.com/mikelane/monarch-mcp/pull/37))
+- compute true spending from transactions in both tools; surface refund pairs ([#32](https://github.com/mikelane/monarch-mcp/pull/32))
+- honor Monarch sign convention in spending_report (expenses are negative) ([#31](https://github.com/mikelane/monarch-mcp/pull/31))
+- treat missing goals file as no goals configured, so `progress_vs_goals` no longer crashes with MCP error -32603 when `MONARCH_GOALS_FILE` points at a path that does not exist yet ([#28](https://github.com/mikelane/monarch-mcp/pull/28), [#22](https://github.com/mikelane/monarch-mcp/issues/22))
 
 ## [0.1.1](https://github.com/mikelane/monarch-mcp/compare/v0.1.0...v0.1.1) - 2026-05-31
 
