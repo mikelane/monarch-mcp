@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/mikelane/monarch-mcp/compare/v0.2.0...v0.3.0) - 2026-06-01
+
+### Added
+
+- compute debt-payoff goal progress in progress_vs_goals ([#27](https://github.com/mikelane/monarch-mcp/pull/27)) ([#42](https://github.com/mikelane/monarch-mcp/pull/42))
+
+### Miscellaneous
+
+- enforce Conventional Commits in CI (PR title + all commits) ([#39](https://github.com/mikelane/monarch-mcp/pull/39)) ([#40](https://github.com/mikelane/monarch-mcp/pull/40))
+
 ## [0.2.0](https://github.com/mikelane/monarch-mcp/compare/v0.1.1...v0.2.0) - 2026-06-01
 
 ### Added
