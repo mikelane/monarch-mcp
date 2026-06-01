@@ -19,7 +19,18 @@ from support.mcp_client import McpClient
 
 
 def before_all(context):
-    """Start the mock Monarch server once for the full test run."""
+    """Start the mock Monarch server once for the full test run.
+
+    Pin MONARCH_NOW before starting the mock server and the Rust monarch-mcp
+    subprocess so both share the same clock basis. This keeps "current month"
+    and "prior month" classifications deterministic regardless of wall-clock
+    time, fixing the month-boundary flakiness diagnosed in issue #34.
+
+    2026-05-15 keeps "this month" = May 2026, matching existing 2026-05-xx
+    transaction fixtures throughout the BDD suite.
+    """
+    os.environ["MONARCH_NOW"] = "2026-05-15"
+
     _thread, port = start_server()
     context.mock_port = port
     context.mock_base = f"http://127.0.0.1:{port}"

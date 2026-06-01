@@ -75,7 +75,9 @@ Rules:
 
 `MONARCH_BASE` (API base, default real Monarch) · `MONARCH_TOKEN` (use directly, skip login) ·
 `MONARCH_GOALS_FILE` (goals TOML) · `MONARCH_CONFIG_DIR` / `XDG_CONFIG_HOME` (session dir —
-tests set this to a temp dir so they never touch a real session).
+tests set this to a temp dir so they never touch a real session) ·
+`MONARCH_NOW` (**test-only** ISO `YYYY-MM-DD` clock override — pinned in `bdd/environment.py`
+so the Rust client and the Python mock share the same "today"; never set in production).
 
 ## Secrets & data hygiene (keeps the history publishable)
 
