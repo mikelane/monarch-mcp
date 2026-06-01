@@ -1111,6 +1111,34 @@ mod tests {
         assert_eq!(result.on_pace.as_deref(), Some("off"));
     }
 
+    // -----------------------------------------------------------------------
+    // Audit gaps
+    // -----------------------------------------------------------------------
+
+    // Audit: malformed target_date → months_to_target_from_date should not panic
+    // and should return a predictable value (0 for unparseable input)
+    #[test]
+    fn months_to_target_malformed_date_does_not_panic() {
+        // Both year and month fall back to 0 → (0-2026)*12 + (0-5) = large negative
+        // What matters is it doesn't panic; sign/value tested separately
+        let _ = months_to_target_from_date("not-a-date", 2026, 5);
+        let _ = months_to_target_from_date("", 2026, 5);
+        let _ = months_to_target_from_date("2027", 2026, 5); // only year
+    }
+
+    // Audit: months_to_target == 0 with debt > 0 → status "off" (target this month, still owed)
+    #[test]
+    fn compute_debt_payoff_target_this_month_with_debt_is_off() {
+        // target = "2026-05-01" and today = (2026, 5) → months_to_target = 0
+        // 0 is treated like a passed deadline with remaining debt → off
+        let goal = debt_goal("2026-05-01", Some(500.0));
+        let accounts = vec![credit_account(-3000.0)];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "off");
+        assert_eq!(result.months_to_target, 0);
+        assert_eq!(result.required_monthly, None); // can't compute when months=0
+    }
+
     #[test]
     fn unset_savings_rate_absent_even_when_emergency_fund_present() {
         let goals = goals_with_emergency_fund(6.0);
