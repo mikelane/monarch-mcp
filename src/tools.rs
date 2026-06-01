@@ -394,7 +394,7 @@ fn current_month_range() -> (String, String) {
     // Simpler: ask the OS via formatted date string if available, else hard-code today.
     //
     // We use a helper that formats dates without chrono.
-    let (year, month, _day) = days_to_ymd(days_since_epoch as i64);
+    let (year, month, _day) = epoch_days_to_ymd(days_since_epoch as i64);
 
     let start = format!("{year:04}-{month:02}-01");
     // For end, use the first of next month minus 1 day
@@ -410,7 +410,7 @@ fn prior_month_range() -> (String, String) {
         .unwrap_or_default()
         .as_secs();
     let days_since_epoch = (now / 86_400) as i64;
-    let (mut year, mut month, _) = days_to_ymd(days_since_epoch);
+    let (mut year, mut month, _) = epoch_days_to_ymd(days_since_epoch);
     if month == 1 {
         year -= 1;
         month = 12;
@@ -423,21 +423,6 @@ fn prior_month_range() -> (String, String) {
     (start, end)
 }
 
-/// Convert days since Unix epoch to (year, month, day).
-fn days_to_ymd(days: i64) -> (i64, u32, u32) {
-    // Proleptic Gregorian algorithm from Wikipedia
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m as u32, d as u32)
-}
 
 fn days_in_month(year: i64, month: u32) -> u32 {
     match month {
