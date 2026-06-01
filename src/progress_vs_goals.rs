@@ -51,7 +51,9 @@ pub struct DebtPayoffStatus {
     /// Total debt owed across all credit and loan accounts (positive magnitude).
     pub total_debt: f64,
     /// Whole months from today to the target payoff date. May be ≤ 0 if past.
-    pub months_to_target: i64,
+    /// `None` when `target_date` is malformed (not parseable as `YYYY-MM…`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub months_to_target: Option<i64>,
     /// Monthly payment required to clear total_debt by the target date.
     /// None when months_to_target ≤ 0 or total_debt == 0.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,13 +81,24 @@ const DEBT_TYPES: &[&str] = &["credit", "loan"];
 
 /// Compute whole months from (today_year, today_month) to the leading YYYY-MM of target_date.
 ///
+/// Returns `Some(months)` when `target_date` has a parseable `YYYY-MM` prefix with a valid
+/// year and a month in `1..=12`. Returns `None` for any malformed input (empty string,
+/// year-only, non-numeric parts, month out of range).
+///
 /// Returns a negative value when the target date is in the past.
-/// Only the year and month portions of target_date are used.
-pub fn months_to_target_from_date(target_date: &str, today_year: i64, today_month: u32) -> i64 {
+/// Only the year and month portions of target_date are used; the day is ignored.
+pub fn months_to_target_from_date(
+    target_date: &str,
+    today_year: i64,
+    today_month: u32,
+) -> Option<i64> {
     let mut parts = target_date.splitn(3, '-');
-    let target_year: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let target_month: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    (target_year - today_year) * 12 + target_month - today_month as i64
+    let target_year: i64 = parts.next()?.parse().ok()?;
+    let target_month: i64 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&target_month) {
+        return None;
+    }
+    Some((target_year - today_year) * 12 + target_month - today_month as i64)
 }
 
 // ---------------------------------------------------------------------------
@@ -142,10 +155,11 @@ pub fn compute_debt_payoff(
     // Signal 1 — on schedule?
     let required_monthly = if total_debt == 0.0 {
         Some(0.0)
-    } else if months_to_target > 0 {
-        Some(total_debt / months_to_target as f64)
     } else {
-        None
+        match months_to_target {
+            Some(m) if m > 0 => Some(total_debt / m as f64),
+            _ => None,
+        }
     };
 
     let on_schedule: Option<String> = match (planned_monthly, required_monthly) {
@@ -165,10 +179,13 @@ pub fn compute_debt_payoff(
     };
 
     // Overall status: worst of computable signals; "unknown" when none.
+    // A malformed target_date (months_to_target == None) does NOT force "off" —
+    // it falls through to the sub-status blend, yielding "unknown" when no other
+    // signal is available.
     let status = if total_debt == 0.0 {
         "on track".to_string()
-    } else if months_to_target <= 0 && total_debt > 0.0 {
-        // Target date passed with debt remaining — off regardless of signals
+    } else if matches!(months_to_target, Some(m) if m <= 0) && total_debt > 0.0 {
+        // Valid target date has passed with debt remaining — genuinely off
         "off".to_string()
     } else {
         let sub_statuses: Vec<&str> = [on_schedule.as_deref(), on_pace.as_deref()]
@@ -788,27 +805,81 @@ mod tests {
     fn months_to_target_8_months_away() {
         // MONARCH_NOW = 2026-05-15, target = 2027-01-01
         // (2027 - 2026)*12 + (1 - 5) = 12 - 4 = 8
-        assert_eq!(months_to_target_from_date("2027-01-01", 2026, 5), 8);
+        assert_eq!(months_to_target_from_date("2027-01-01", 2026, 5), Some(8));
     }
 
     // 9c TRIANGULATE: target in the same month → 0
     #[test]
     fn months_to_target_same_month_is_zero() {
-        assert_eq!(months_to_target_from_date("2026-05-01", 2026, 5), 0);
+        assert_eq!(months_to_target_from_date("2026-05-01", 2026, 5), Some(0));
     }
 
     // 9c TRIANGULATE: target in the past → negative
     #[test]
     fn months_to_target_past_date_is_negative() {
         // target = 2026-04-01, today = 2026-05 → -1
-        assert_eq!(months_to_target_from_date("2026-04-01", 2026, 5), -1);
+        assert_eq!(months_to_target_from_date("2026-04-01", 2026, 5), Some(-1));
     }
 
     // 9c TRIANGULATE: year boundary
     #[test]
     fn months_to_target_crosses_year_boundary() {
         // target = 2027-12-01, today = 2026-05 → (1)*12 + 7 = 19
-        assert_eq!(months_to_target_from_date("2027-12-01", 2026, 5), 19);
+        assert_eq!(months_to_target_from_date("2027-12-01", 2026, 5), Some(19));
+    }
+
+    // -----------------------------------------------------------------------
+    // months_to_target_from_date — Option return: None for malformed dates
+    // -----------------------------------------------------------------------
+
+    // 9a RED: garbage string → None (not a confident wrong answer)
+    #[test]
+    fn months_to_target_garbage_is_none() {
+        assert_eq!(months_to_target_from_date("garbage", 2026, 5), None);
+    }
+
+    // 9a RED: empty string → None
+    #[test]
+    fn months_to_target_empty_string_is_none() {
+        assert_eq!(months_to_target_from_date("", 2026, 5), None);
+    }
+
+    // 9a RED: year only (no month) → None
+    #[test]
+    fn months_to_target_year_only_is_none() {
+        assert_eq!(months_to_target_from_date("2027", 2026, 5), None);
+    }
+
+    // 9a RED: month out of range (13) → None
+    #[test]
+    fn months_to_target_month_13_is_none() {
+        assert_eq!(months_to_target_from_date("2027-13", 2026, 5), None);
+    }
+
+    // 9a RED: month zero → None
+    #[test]
+    fn months_to_target_month_zero_is_none() {
+        assert_eq!(months_to_target_from_date("2027-00", 2026, 5), None);
+    }
+
+    // 9c TRIANGULATE: valid full date with day → Some(months)
+    #[test]
+    fn months_to_target_valid_full_date_is_some() {
+        // "2027-12-01" from today (2026, 5) → Some(19)
+        assert_eq!(months_to_target_from_date("2027-12-01", 2026, 5), Some(19));
+    }
+
+    // 9c TRIANGULATE: same month → Some(0)
+    #[test]
+    fn months_to_target_same_month_some_zero() {
+        assert_eq!(months_to_target_from_date("2026-05-01", 2026, 5), Some(0));
+    }
+
+    // 9c TRIANGULATE: past valid date → Some(negative)
+    #[test]
+    fn months_to_target_past_valid_date_some_negative() {
+        // "2026-04-01" from today (2026, 5) → Some(-1)
+        assert_eq!(months_to_target_from_date("2026-04-01", 2026, 5), Some(-1));
     }
 
     // -----------------------------------------------------------------------
@@ -1058,7 +1129,7 @@ mod tests {
         let accounts = vec![credit_account(-3000.0)];
         let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
         assert_eq!(result.status, "off");
-        assert!(result.months_to_target <= 0);
+        assert!(result.months_to_target.unwrap_or(0) <= 0);
         assert_eq!(result.required_monthly, None);
     }
 
@@ -1073,7 +1144,7 @@ mod tests {
         assert!(result.on_pace.is_none());
         // numbers still surface
         assert_eq!(result.total_debt, 7000.0);
-        assert_eq!(result.months_to_target, 8);
+        assert_eq!(result.months_to_target, Some(8));
         assert!(result.required_monthly.is_some());
     }
 
@@ -1115,28 +1186,101 @@ mod tests {
     // Audit gaps
     // -----------------------------------------------------------------------
 
-    // Audit: malformed target_date → months_to_target_from_date should not panic
-    // and should return a predictable value (0 for unparseable input)
+    // Audit: malformed target_date → months_to_target_from_date returns None (not a fabricated value)
+    // These cases are now covered by the dedicated None tests above; this test just
+    // documents the previously-panic-free but wrong behavior is now correctly None.
     #[test]
-    fn months_to_target_malformed_date_does_not_panic() {
-        // Both year and month fall back to 0 → (0-2026)*12 + (0-5) = large negative
-        // What matters is it doesn't panic; sign/value tested separately
-        let _ = months_to_target_from_date("not-a-date", 2026, 5);
-        let _ = months_to_target_from_date("", 2026, 5);
-        let _ = months_to_target_from_date("2027", 2026, 5); // only year
+    fn months_to_target_malformed_dates_are_none() {
+        assert_eq!(months_to_target_from_date("not-a-date", 2026, 5), None);
+        assert_eq!(months_to_target_from_date("", 2026, 5), None);
+        assert_eq!(months_to_target_from_date("2027", 2026, 5), None);
     }
 
     // Audit: months_to_target == 0 with debt > 0 → status "off" (target this month, still owed)
     #[test]
     fn compute_debt_payoff_target_this_month_with_debt_is_off() {
-        // target = "2026-05-01" and today = (2026, 5) → months_to_target = 0
+        // target = "2026-05-01" and today = (2026, 5) → months_to_target = Some(0)
         // 0 is treated like a passed deadline with remaining debt → off
         let goal = debt_goal("2026-05-01", Some(500.0));
         let accounts = vec![credit_account(-3000.0)];
         let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
         assert_eq!(result.status, "off");
-        assert_eq!(result.months_to_target, 0);
+        assert_eq!(result.months_to_target, Some(0));
         assert_eq!(result.required_monthly, None); // can't compute when months=0
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 2: malformed target_date propagation — None months_to_target
+    // -----------------------------------------------------------------------
+
+    // 9a RED: malformed date + debt + planned payment + no snapshot → "unknown", months_to_target absent
+    #[test]
+    fn compute_debt_payoff_malformed_date_no_snapshot_is_unknown() {
+        let goal = debt_goal("garbage", Some(500.0));
+        let accounts = vec![credit_account(-5000.0)];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(
+            result.status, "unknown",
+            "malformed date must not produce 'off'"
+        );
+        assert_eq!(
+            result.months_to_target, None,
+            "months_to_target must be absent for malformed date"
+        );
+        assert_eq!(
+            result.required_monthly, None,
+            "required_monthly must be None when months unknown"
+        );
+    }
+
+    // 9a RED: empty date string → same as garbage
+    #[test]
+    fn compute_debt_payoff_empty_date_no_snapshot_is_unknown() {
+        let goal = debt_goal("", Some(500.0));
+        let accounts = vec![credit_account(-3000.0)];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.months_to_target, None);
+    }
+
+    // 9a RED: year-only date → same as garbage
+    #[test]
+    fn compute_debt_payoff_year_only_date_no_snapshot_is_unknown() {
+        let goal = debt_goal("2027", Some(500.0));
+        let accounts = vec![credit_account(-3000.0)];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.months_to_target, None);
+    }
+
+    // 9c TRIANGULATE: malformed date + good prior-snapshot paydown → on_pace signal drives status
+    #[test]
+    fn compute_debt_payoff_malformed_date_with_good_paydown_uses_on_pace() {
+        // planned=500, actual paydown=600 ≥ 500 → on_pace="on track"; no on_schedule
+        // worst of {on_track} = "on track" (not "off")
+        let goal = debt_goal("2027", Some(500.0));
+        let accounts = vec![credit_account(-7000.0)];
+        let snaps = prior_and_current_snaps(7600.0, 7000.0); // paid down 600
+        let result = compute_debt_payoff(&goal, &accounts, &snaps, "2026-04", "2026-05", 2026, 5);
+        assert_ne!(
+            result.status, "off",
+            "malformed date must not force 'off' when pace is good"
+        );
+        assert_eq!(result.months_to_target, None);
+        assert_eq!(result.on_schedule, None);
+        assert_eq!(result.on_pace.as_deref(), Some("on track"));
+        assert_eq!(result.status, "on track");
+    }
+
+    // 9c TRIANGULATE: genuinely past valid date with debt → still "off"
+    #[test]
+    fn compute_debt_payoff_genuinely_past_valid_date_is_off() {
+        // "2026-04-01" is a valid date, months_to_target = Some(-1), debt > 0 → "off"
+        let goal = debt_goal("2026-04-01", Some(500.0));
+        let accounts = vec![credit_account(-3000.0)];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "off");
+        assert_eq!(result.months_to_target, Some(-1));
     }
 
     #[test]

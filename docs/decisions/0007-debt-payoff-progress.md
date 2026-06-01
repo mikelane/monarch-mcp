@@ -42,9 +42,9 @@ accounts.
 ### Output — `debt_payoff: Option<DebtPayoffStatus>` (enriched)
 ```
 DebtPayoffStatus {
-  status: String,                 // overall (see blend)
+  status: String,                   // overall (see blend)
   total_debt: f64,
-  months_to_target: i64,
+  months_to_target: Option<i64>,   // absent when target_date is malformed
   required_monthly: Option<f64>,
   planned_monthly:  Option<f64>,
   on_schedule:      Option<String>,
@@ -52,7 +52,7 @@ DebtPayoffStatus {
   on_pace:          Option<String>,
 }
 ```
-`Option` fields are `skip_serializing_if = "Option::is_none"`.
+All `Option` fields are `skip_serializing_if = "Option::is_none"` — absent from JSON when `None`.
 
 ### Overall `status` blend
 The conservative (worst) of the computable sub-statuses, ranked `off > drifting > on track`:
@@ -64,8 +64,13 @@ The conservative (worst) of the computable sub-statuses, ranked `off > drifting 
 
 ### Edge cases (all unit-tested)
 - `total_debt == 0` → already paid off → overall `"on track"`; `required_monthly = Some(0.0)`.
-- `target_date` in the past with `total_debt > 0` → missed → `on_schedule = "off"`,
-  `required_monthly = None`, `months_to_target ≤ 0`.
+- `target_date` is a **valid** past date with `total_debt > 0` → missed deadline →
+  `months_to_target = Some(m)` where `m ≤ 0`, `required_monthly = None`, status `"off"`.
+- `target_date` is **malformed** (empty, year-only, bad month, non-numeric) →
+  `months_to_target = None` (absent from JSON), `required_monthly = None`, `on_schedule = None`.
+  Status is the worst of any remaining computable sub-statuses, or `"unknown"` if none.
+  A malformed date **must not** produce `"off"` — that verdict is reserved for cases where the
+  date is unambiguously in the past. (Refinement from adversarial QA.)
 - `monthly_payment` absent → `on_schedule`/`on_pace` `None`; numbers still surface; overall may be
   `"unknown"`.
 - no prior snapshot → `actual_paydown`/`on_pace` `None`.
