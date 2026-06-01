@@ -355,6 +355,9 @@ mod tests {
         assert_eq!(result.applied_changes[0].id, "t1");
         assert_eq!(result.rejected_changes.len(), 1);
         assert_eq!(result.rejected_changes[0].id, "t2");
+        // transaction_count is derived as applied + rejected; with both buckets
+        // non-empty it must be their sum (catches a mutant that counts only one).
+        assert_eq!(result.transaction_count, 2);
     }
 
     // -----------------------------------------------------------------------
