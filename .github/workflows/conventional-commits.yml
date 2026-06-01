@@ -53,8 +53,21 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          set -euo pipefail
+
           # keep in sync with release-plz.toml commit_parsers
           PATTERN='^(feat|fix|perf|refactor|docs|test|chore|style|ci|build|revert)(\([a-z0-9._/-]+\))?!?: .+'
+
+          # Capture subjects into a file first — a git log failure now aborts the job
+          # rather than silently passing with an empty stream.
+          subjects_file=$(mktemp)
+          git log --no-merges --format=%s "$BASE_SHA".."$HEAD_SHA" > "$subjects_file"
+
+          subject_count=$(grep -c . "$subjects_file" || true)
+          if [ "$subject_count" -eq 0 ]; then
+            echo "ERROR: No commits found in range $BASE_SHA..$HEAD_SHA — nothing to validate."
+            exit 1
+          fi
 
           violations=()
           while IFS= read -r subject; do
@@ -64,7 +77,7 @@ jobs:
             if ! echo "$subject" | grep -qE "$PATTERN"; then
               violations+=("  - $subject")
             fi
-          done < <(git log --no-merges --format=%s "$BASE_SHA".."$HEAD_SHA")
+          done < "$subjects_file"
 
           if [ ${#violations[@]} -gt 0 ]; then
             echo "ERROR: The following commit subjects do not follow Conventional Commits:"
@@ -81,4 +94,4 @@ jobs:
             exit 1
           fi
 
-          echo "All commit subjects follow Conventional Commits."
+          echo "All $subject_count commit subject(s) follow Conventional Commits."

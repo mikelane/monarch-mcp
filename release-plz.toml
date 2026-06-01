@@ -36,6 +36,11 @@ commit_parsers = [
   { message = "^refactor", group = "Changed" },
   { message = "^docs", group = "Documentation" },
   { message = "^test", group = "Testing" },
+  # build + revert keep the CI allowlist and release-plz in sync:
+  # both types are accepted by the CI gate so both must map to a CHANGELOG group.
+  { message = "^build", group = "Miscellaneous" },
+  # Reverts change visible behavior back — surface them in the changelog, not buried.
+  { message = "^revert", group = "Changed" },
   { message = "^chore\\(release\\)", skip = true },
   { message = "^chore: release", skip = true },
   { message = "^chore", group = "Miscellaneous" },
