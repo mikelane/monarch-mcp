@@ -431,8 +431,8 @@ fn parse_iso_date_to_epoch_day(s: &str) -> Option<i64> {
 /// Production leaves it unset and uses `chrono::Local` so the advisor
 /// matches what the user sees running it locally (ADR 0006).
 fn today_epoch_day() -> i64 {
-    if let Ok(s) = std::env::var("MONARCH_NOW") {
-        if let Some(day) = parse_iso_date_to_epoch_day(&s) {
+    if let Ok(now_override) = std::env::var("MONARCH_NOW") {
+        if let Some(day) = parse_iso_date_to_epoch_day(&now_override) {
             return day;
         }
         // Malformed override — fall through to the local clock, never a wrong fixed day
