@@ -16,6 +16,7 @@ Control endpoints (called by environment.py and step definitions):
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any
 
@@ -332,16 +333,17 @@ def _handle_web_get_cash_flow_page(body: dict) -> dict:
     spending = cf.get("spending", 0.0)
     prior_spending = fixtures.get("prior_month_spending", 0.0)
 
-    # Parse year-month from startDate
+    # Parse year-month from startDate.
+    # The mock must share the client's clock basis via MONARCH_NOW so period
+    # classification is deterministic regardless of wall-clock time.
     is_prior = False
     if start_date and len(start_date) >= 7:
         ym = start_date[:7]  # "YYYY-MM"
         try:
             yr, mo = map(int, ym.split("-"))
-            # Treat anything before 2026-05 as prior month
-            # (May 2026 is the "current" mock period — close enough for tests)
             import datetime
-            today = datetime.date.today()
+            _now = os.environ.get("MONARCH_NOW")
+            today = datetime.date.fromisoformat(_now) if _now else datetime.date.today()
             current_ym = (today.year, today.month)
             is_prior = (yr, mo) < current_ym
         except (ValueError, AttributeError):
