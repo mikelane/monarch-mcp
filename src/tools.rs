@@ -777,6 +777,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_iso_date_year_range_boundaries() {
+        // Pin both edges of the accepted year range (1..=9999) so a mutation that
+        // widens or shifts the bound is caught: 0 below the floor, 1 at the floor,
+        // 9999 at the ceiling, 10000 just past it.
+        assert_eq!(parse_iso_date_to_epoch_day("0000-06-15"), None);
+        assert!(parse_iso_date_to_epoch_day("0001-06-15").is_some());
+        assert!(parse_iso_date_to_epoch_day("9999-06-15").is_some());
+        assert_eq!(parse_iso_date_to_epoch_day("10000-06-15"), None);
+    }
+
+    #[test]
     fn parse_iso_date_does_not_panic_on_huge_year() {
         // Must return None instead of panicking on overflow
         assert_eq!(

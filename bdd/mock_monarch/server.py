@@ -342,8 +342,8 @@ def _handle_web_get_cash_flow_page(body: dict) -> dict:
         try:
             yr, mo = map(int, ym.split("-"))
             import datetime
-            _now = os.environ.get("MONARCH_NOW")
-            today = datetime.date.fromisoformat(_now) if _now else datetime.date.today()
+            pinned_now = os.environ.get("MONARCH_NOW")
+            today = datetime.date.fromisoformat(pinned_now) if pinned_now else datetime.date.today()
             current_ym = (today.year, today.month)
             is_prior = (yr, mo) < current_ym
         except (ValueError, AttributeError):
