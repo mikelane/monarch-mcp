@@ -823,6 +823,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ahead_of_utc_local_rolls_to_next_month() {
+        // Symmetric mirror of the west case: an ahead-of-UTC user.
+        // 2026-05-31 23:00 UTC == 2026-06-01 13:00 in UTC+14:00 (Line Islands).
+        // A UTC-based today_epoch_day would compute May; local must compute June.
+        use chrono::{Datelike, FixedOffset, TimeZone, Utc};
+
+        let instant = Utc.with_ymd_and_hms(2026, 5, 31, 23, 0, 0).unwrap();
+        let local = instant
+            .with_timezone(&FixedOffset::east_opt(14 * 3600).unwrap())
+            .date_naive();
+        assert_eq!(
+            (local.year(), local.month(), local.day()),
+            (2026, 6, 1),
+            "UTC+14 should see June 1, not May 31"
+        );
+
+        // Local path gives June range
+        let local_day = civil_to_epoch_day(
+            local.year() as i64,
+            local.month() as i64,
+            local.day() as i64,
+        );
+        assert_eq!(
+            current_month_range_for_day(local_day),
+            ("2026-06-01".to_string(), "2026-06-30".to_string()),
+            "local date must produce June range"
+        );
+
+        // UTC path would wrongly give May range — confirming the symmetric bug
+        let utc = instant.date_naive();
+        let utc_day = civil_to_epoch_day(utc.year() as i64, utc.month() as i64, utc.day() as i64);
+        assert_eq!(
+            current_month_range_for_day(utc_day),
+            ("2026-05-01".to_string(), "2026-05-31".to_string()),
+            "UTC date produces May range"
+        );
+    }
+
     // --- parse_iso_date_to_epoch_day ---
 
     #[test]
