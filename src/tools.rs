@@ -626,10 +626,7 @@ async fn apply_approved_changeset(
     let entries = parse_raw_changes(raw_changes);
 
     // Partition into allowed and forbidden entries — forbidden ones never reach the API.
-    let (cur_start, cur_end) = current_month_range();
-    let all_transactions = client.get_transactions(&cur_start, &cur_end, 500).await?;
-    let total_count = all_transactions.len();
-    let result = partition_changeset(&entries, total_count);
+    let result = partition_changeset(&entries);
 
     // Send only the allowed changes to the Monarch API.
     for change in &result.applied_changes {
