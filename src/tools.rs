@@ -376,41 +376,64 @@ impl Default for MonarchTools {
 // Date-range helpers
 // ---------------------------------------------------------------------------
 
-/// Returns (start, end) for the current calendar month as ISO-8601 strings.
-fn current_month_range() -> (String, String) {
-    // Use time crate-free approach: chrono is not a dep, so compute from
-    // the system clock via std. We format YYYY-MM-01 for start and
-    // YYYY-MM-{last_day} for end. Since we don't have chrono, we use a
-    // simple approach: end = today and start = first of this month.
-    let now = std::time::SystemTime::now()
+/// Parse an ISO `YYYY-MM-DD` date string to days since the Unix epoch.
+///
+/// Returns `None` for non-three-part or non-numeric inputs so callers can
+/// fall back gracefully instead of silently using a wrong date.
+fn parse_iso_date_to_epoch_day(s: &str) -> Option<i64> {
+    let mut parts = s.splitn(3, '-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    // Reject if a fourth part exists (extra dashes)
+    // splitn(3,'-') stops at 3 parts so no extra check needed.
+
+    // Howard Hinnant civil_from_days inverse: days_from_civil
+    // https://howardhinnant.github.io/date_algorithms.html
+    let y = if month <= 2 { year - 1 } else { year };
+    let m = month as u32;
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) as i64 + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+/// Days since the Unix epoch for "today". Honors the `MONARCH_NOW` test override
+/// (an ISO `YYYY-MM-DD` date) so datetime-dependent behavior is deterministic and
+/// hermetic in tests; production leaves it unset and uses the system clock (UTC).
+fn today_epoch_day() -> i64 {
+    if let Ok(s) = std::env::var("MONARCH_NOW") {
+        if let Some(day) = parse_iso_date_to_epoch_day(&s) {
+            return day;
+        }
+        // Malformed override — fall through to the system clock, never a wrong fixed day
+    }
+    (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
-    // seconds since epoch → rough calendar arithmetic
-    let secs_per_day = 86_400u64;
-    let days_since_epoch = now / secs_per_day;
-    // 2000-01-01 was day 10_957 since epoch (Unix epoch = 1970-01-01)
-    // Use a reference: 2024-01-01 = 19723 days since epoch
-    // Simpler: ask the OS via formatted date string if available, else hard-code today.
-    //
-    // We use a helper that formats dates without chrono.
-    let (year, month, _day) = epoch_days_to_ymd(days_since_epoch as i64);
+        .as_secs()
+        / 86_400) as i64
+}
 
+/// Pure computation of the current-month range for a given epoch day.
+///
+/// Extracted from `current_month_range` so it can be tested without touching
+/// the system clock. Callers pass `today_epoch_day()`.
+fn current_month_range_for_day(day: i64) -> (String, String) {
+    let (year, month, _) = epoch_days_to_ymd(day);
     let start = format!("{year:04}-{month:02}-01");
-    // For end, use the first of next month minus 1 day
     let last_day = days_in_month(year, month);
     let end = format!("{year:04}-{month:02}-{last_day:02}");
     (start, end)
 }
 
-/// Returns (start, end) for the prior calendar month.
-fn prior_month_range() -> (String, String) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days_since_epoch = (now / 86_400) as i64;
-    let (mut year, mut month, _) = epoch_days_to_ymd(days_since_epoch);
+/// Pure computation of the prior-month range for a given epoch day.
+///
+/// Extracted from `prior_month_range` so it can be tested without touching
+/// the system clock. Callers pass `today_epoch_day()`.
+fn prior_month_range_for_day(day: i64) -> (String, String) {
+    let (mut year, mut month, _) = epoch_days_to_ymd(day);
     if month == 1 {
         year -= 1;
         month = 12;
@@ -421,6 +444,16 @@ fn prior_month_range() -> (String, String) {
     let start = format!("{year:04}-{month:02}-01");
     let end = format!("{year:04}-{month:02}-{last_day:02}");
     (start, end)
+}
+
+/// Returns (start, end) for the current calendar month as ISO-8601 strings.
+fn current_month_range() -> (String, String) {
+    current_month_range_for_day(today_epoch_day())
+}
+
+/// Returns (start, end) for the prior calendar month.
+fn prior_month_range() -> (String, String) {
+    prior_month_range_for_day(today_epoch_day())
 }
 
 fn days_in_month(year: i64, month: u32) -> u32 {
@@ -577,17 +610,12 @@ async fn fetch_and_compute_trend(
     Ok(compute_trend(&snapshots))
 }
 
-/// Compute the ISO date for the first day of the month that is `n` months before today.
+/// Pure computation of the start of the month `n` months before the given epoch day.
 ///
-/// Uses only integer arithmetic on the Unix epoch — no external date library needed.
-fn months_ago_start(n: u32) -> String {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let today_days = (now_secs / 86_400) as i64;
-    let (mut year, mut month, _) = epoch_days_to_ymd(today_days);
-
+/// Extracted from `months_ago_start` so it can be tested without touching the system
+/// clock. `n=0` returns the first day of the month containing `day`.
+fn months_ago_start_for_day(day: i64, n: u32) -> String {
+    let (mut year, mut month, _) = epoch_days_to_ymd(day);
     for _ in 0..n {
         if month == 1 {
             year -= 1;
@@ -597,6 +625,13 @@ fn months_ago_start(n: u32) -> String {
         }
     }
     format!("{year:04}-{month:02}-01")
+}
+
+/// Compute the ISO date for the first day of the month that is `n` months before today.
+///
+/// Uses only integer arithmetic on the Unix epoch — no external date library needed.
+fn months_ago_start(n: u32) -> String {
+    months_ago_start_for_day(today_epoch_day(), n)
 }
 
 /// Convert a count of days since Unix epoch to (year, month, day).
@@ -658,5 +693,122 @@ impl ServerHandler for MonarchTools {
              cashflow_forecast, net_worth_trend, recurring_scan."
                     .to_string(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper: build an epoch day from a known date string for test inputs.
+    fn day(date: &str) -> i64 {
+        parse_iso_date_to_epoch_day(date).unwrap_or_else(|| panic!("bad test date: {date}"))
+    }
+
+    // --- parse_iso_date_to_epoch_day ---
+
+    #[test]
+    fn parse_iso_date_round_trips_known_epoch() {
+        // 1970-01-01 is day 0
+        assert_eq!(parse_iso_date_to_epoch_day("1970-01-01"), Some(0));
+    }
+
+    #[test]
+    fn parse_iso_date_round_trips_2026_05_15() {
+        // 2026-05-15: verify epoch_days_to_ymd(parse(...)) == (2026,5,15)
+        let d = parse_iso_date_to_epoch_day("2026-05-15").unwrap();
+        assert_eq!(epoch_days_to_ymd(d), (2026, 5, 15));
+    }
+
+    #[test]
+    fn parse_iso_date_round_trips_2024_02_29_leap() {
+        let d = parse_iso_date_to_epoch_day("2024-02-29").unwrap();
+        assert_eq!(epoch_days_to_ymd(d), (2024, 2, 29));
+    }
+
+    #[test]
+    fn parse_iso_date_returns_none_for_too_few_parts() {
+        assert_eq!(parse_iso_date_to_epoch_day("2026-13"), None);
+    }
+
+    #[test]
+    fn parse_iso_date_returns_none_for_garbage() {
+        assert_eq!(parse_iso_date_to_epoch_day("garbage"), None);
+    }
+
+    // --- current_month_range_for_day ---
+
+    #[test]
+    fn current_month_range_last_day_of_may_2026() {
+        // The exact bug in issue #34: on 2026-05-31 the range must still be May.
+        let (start, end) = current_month_range_for_day(day("2026-05-31"));
+        assert_eq!(start, "2026-05-01");
+        assert_eq!(end, "2026-05-31");
+    }
+
+    #[test]
+    fn current_month_range_for_mid_month() {
+        let (start, end) = current_month_range_for_day(day("2026-05-15"));
+        assert_eq!(start, "2026-05-01");
+        assert_eq!(end, "2026-05-31");
+    }
+
+    #[test]
+    fn current_month_range_leap_february() {
+        let (start, end) = current_month_range_for_day(day("2024-02-10"));
+        assert_eq!(start, "2024-02-01");
+        assert_eq!(end, "2024-02-29");
+    }
+
+    #[test]
+    fn current_month_range_non_leap_february() {
+        let (start, end) = current_month_range_for_day(day("2026-02-10"));
+        assert_eq!(start, "2026-02-01");
+        assert_eq!(end, "2026-02-28");
+    }
+
+    // --- prior_month_range_for_day ---
+
+    #[test]
+    fn prior_month_range_last_day_of_may_2026() {
+        // The exact bug: on 2026-05-31 the prior range must be April, not March.
+        let (start, end) = prior_month_range_for_day(day("2026-05-31"));
+        assert_eq!(start, "2026-04-01");
+        assert_eq!(end, "2026-04-30");
+    }
+
+    #[test]
+    fn prior_month_range_crosses_year_boundary() {
+        let (start, end) = prior_month_range_for_day(day("2026-01-15"));
+        assert_eq!(start, "2025-12-01");
+        assert_eq!(end, "2025-12-31");
+    }
+
+    #[test]
+    fn prior_month_range_march_2024_gives_leap_february() {
+        let (start, end) = prior_month_range_for_day(day("2024-03-10"));
+        assert_eq!(start, "2024-02-01");
+        assert_eq!(end, "2024-02-29");
+    }
+
+    // --- months_ago_start_for_day ---
+
+    #[test]
+    fn months_ago_start_n0_returns_current_month_start() {
+        assert_eq!(months_ago_start_for_day(day("2026-05-15"), 0), "2026-05-01");
+    }
+
+    #[test]
+    fn months_ago_start_n12_crosses_year() {
+        assert_eq!(
+            months_ago_start_for_day(day("2026-05-15"), 12),
+            "2025-05-01"
+        );
+    }
+
+    #[test]
+    fn months_ago_start_n6_from_february_crosses_year() {
+        // 2026-02-15 minus 6 months = 2025-08-01
+        assert_eq!(months_ago_start_for_day(day("2026-02-15"), 6), "2025-08-01");
     }
 }
