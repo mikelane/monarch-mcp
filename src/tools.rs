@@ -376,6 +376,24 @@ impl Default for MonarchTools {
 // Date-range helpers
 // ---------------------------------------------------------------------------
 
+/// Convert a civil (year, month, day) triple to days since the Unix epoch.
+///
+/// Uses the Howard Hinnant days_from_civil algorithm. No input validation —
+/// callers must ensure month is 1..=12 and day is valid for the month.
+/// `parse_iso_date_to_epoch_day` validates before calling this; `today_epoch_day`
+/// obtains a validated date from `chrono::Local`.
+fn civil_to_epoch_day(year: i64, month: i64, day: i64) -> i64 {
+    // Howard Hinnant civil_from_days inverse: days_from_civil
+    // https://howardhinnant.github.io/date_algorithms.html
+    let y = if month <= 2 { year - 1 } else { year };
+    let m = month as u32;
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) as i64 + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 /// Parse an ISO `YYYY-MM-DD` date string to days since the Unix epoch.
 ///
 /// Returns `None` for non-three-part or non-numeric inputs so callers can
@@ -403,32 +421,29 @@ fn parse_iso_date_to_epoch_day(s: &str) -> Option<i64> {
         return None;
     }
 
-    // Howard Hinnant civil_from_days inverse: days_from_civil
-    // https://howardhinnant.github.io/date_algorithms.html
-    let y = if month <= 2 { year - 1 } else { year };
-    let m = month as u32;
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) as i64 + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146_097 + doe - 719_468)
+    Some(civil_to_epoch_day(year, month, day))
 }
 
-/// Days since the Unix epoch for "today". Honors the `MONARCH_NOW` test override
-/// (an ISO `YYYY-MM-DD` date) so datetime-dependent behavior is deterministic and
-/// hermetic in tests; production leaves it unset and uses the system clock (UTC).
+/// Days since the Unix epoch for "today" in the host's local timezone.
+///
+/// Honors the `MONARCH_NOW` test override (an ISO `YYYY-MM-DD` date) so
+/// datetime-dependent behavior is deterministic and hermetic in tests.
+/// Production leaves it unset and uses `chrono::Local` so the advisor
+/// matches what the user sees running it locally (ADR 0006).
 fn today_epoch_day() -> i64 {
-    if let Ok(s) = std::env::var("MONARCH_NOW") {
-        if let Some(day) = parse_iso_date_to_epoch_day(&s) {
+    if let Ok(now_override) = std::env::var("MONARCH_NOW") {
+        if let Some(day) = parse_iso_date_to_epoch_day(&now_override) {
             return day;
         }
-        // Malformed override — fall through to the system clock, never a wrong fixed day
+        // Malformed override — fall through to the local clock, never a wrong fixed day
     }
-    (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        / 86_400) as i64
+    use chrono::{Datelike, Local};
+    let today = Local::now().date_naive();
+    civil_to_epoch_day(
+        today.year() as i64,
+        today.month() as i64,
+        today.day() as i64,
+    )
 }
 
 /// Pure computation of the current-month range for a given epoch day.
@@ -718,6 +733,133 @@ mod tests {
     // Helper: build an epoch day from a known date string for test inputs.
     fn day(date: &str) -> i64 {
         parse_iso_date_to_epoch_day(date).unwrap_or_else(|| panic!("bad test date: {date}"))
+    }
+
+    // --- civil_to_epoch_day ---
+
+    #[test]
+    fn civil_to_epoch_day_agrees_with_parse_for_unix_epoch() {
+        // 1970-01-01 is day 0 — both paths must agree
+        assert_eq!(civil_to_epoch_day(1970, 1, 1), 0);
+        assert_eq!(
+            civil_to_epoch_day(1970, 1, 1),
+            parse_iso_date_to_epoch_day("1970-01-01").unwrap()
+        );
+    }
+
+    #[test]
+    fn civil_to_epoch_day_agrees_with_parse_for_mid_month() {
+        let via_parse = parse_iso_date_to_epoch_day("2026-05-15").unwrap();
+        assert_eq!(civil_to_epoch_day(2026, 5, 15), via_parse);
+    }
+
+    #[test]
+    fn civil_to_epoch_day_agrees_with_parse_for_leap_day() {
+        let via_parse = parse_iso_date_to_epoch_day("2024-02-29").unwrap();
+        assert_eq!(civil_to_epoch_day(2024, 2, 29), via_parse);
+    }
+
+    #[test]
+    fn civil_to_epoch_day_agrees_with_parse_for_year_end() {
+        let via_parse = parse_iso_date_to_epoch_day("2025-12-31").unwrap();
+        assert_eq!(civil_to_epoch_day(2025, 12, 31), via_parse);
+    }
+
+    #[test]
+    fn civil_to_epoch_day_round_trips_through_epoch_days_to_ymd() {
+        // Verify the round-trip identity: epoch_days_to_ymd(civil_to_epoch_day(y,m,d)) == (y,m,d)
+        // Uses Local::now() — not hermetic on the date value, but hermetic on the identity.
+        use chrono::{Datelike, Local};
+        let today = Local::now().date_naive();
+        let d = civil_to_epoch_day(
+            today.year() as i64,
+            today.month() as i64,
+            today.day() as i64,
+        );
+        let (ry, rm, rd) = epoch_days_to_ymd(d);
+        assert_eq!(
+            (ry, rm, rd),
+            (today.year() as i64, today.month(), today.day())
+        );
+    }
+
+    // --- local timezone regression (issue #36) ---
+
+    #[test]
+    fn local_tz_wins_over_utc_at_month_boundary() {
+        // 2026-06-01 01:00 UTC == 2026-05-31 18:00 in UTC-07:00.
+        // A UTC-based today_epoch_day would compute June; local must compute May.
+        use chrono::{Datelike, FixedOffset, TimeZone, Utc};
+
+        let instant = Utc.with_ymd_and_hms(2026, 6, 1, 1, 0, 0).unwrap();
+        let local = instant
+            .with_timezone(&FixedOffset::west_opt(7 * 3600).unwrap())
+            .date_naive();
+        assert_eq!(
+            (local.year(), local.month(), local.day()),
+            (2026, 5, 31),
+            "UTC-07 should see May 31, not June 1"
+        );
+
+        // Local path gives May range
+        let local_day = civil_to_epoch_day(
+            local.year() as i64,
+            local.month() as i64,
+            local.day() as i64,
+        );
+        assert_eq!(
+            current_month_range_for_day(local_day),
+            ("2026-05-01".to_string(), "2026-05-31".to_string()),
+            "local date must produce May range"
+        );
+
+        // UTC path would wrongly give June range — confirming the old bug
+        let utc = instant.date_naive();
+        let utc_day = civil_to_epoch_day(utc.year() as i64, utc.month() as i64, utc.day() as i64);
+        assert_eq!(
+            current_month_range_for_day(utc_day),
+            ("2026-06-01".to_string(), "2026-06-30".to_string()),
+            "UTC date produces June range"
+        );
+    }
+
+    #[test]
+    fn ahead_of_utc_local_rolls_to_next_month() {
+        // Symmetric mirror of the west case: an ahead-of-UTC user.
+        // 2026-05-31 23:00 UTC == 2026-06-01 13:00 in UTC+14:00 (Line Islands).
+        // A UTC-based today_epoch_day would compute May; local must compute June.
+        use chrono::{Datelike, FixedOffset, TimeZone, Utc};
+
+        let instant = Utc.with_ymd_and_hms(2026, 5, 31, 23, 0, 0).unwrap();
+        let local = instant
+            .with_timezone(&FixedOffset::east_opt(14 * 3600).unwrap())
+            .date_naive();
+        assert_eq!(
+            (local.year(), local.month(), local.day()),
+            (2026, 6, 1),
+            "UTC+14 should see June 1, not May 31"
+        );
+
+        // Local path gives June range
+        let local_day = civil_to_epoch_day(
+            local.year() as i64,
+            local.month() as i64,
+            local.day() as i64,
+        );
+        assert_eq!(
+            current_month_range_for_day(local_day),
+            ("2026-06-01".to_string(), "2026-06-30".to_string()),
+            "local date must produce June range"
+        );
+
+        // UTC path would wrongly give May range — confirming the symmetric bug
+        let utc = instant.date_naive();
+        let utc_day = civil_to_epoch_day(utc.year() as i64, utc.month() as i64, utc.day() as i64);
+        assert_eq!(
+            current_month_range_for_day(utc_day),
+            ("2026-05-01".to_string(), "2026-05-31".to_string()),
+            "UTC date produces May range"
+        );
     }
 
     // --- parse_iso_date_to_epoch_day ---
