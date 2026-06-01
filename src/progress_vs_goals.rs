@@ -6,6 +6,7 @@
 
 use crate::client::{Account, Cashflow};
 use crate::goals::Goals;
+use crate::net_worth_trend::AccountTypeSnapshot;
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------
@@ -14,9 +15,7 @@ use serde::Serialize;
 
 /// The result payload returned as JSON by `progress_vs_goals`.
 /// Only fields for goals that have been set are present.
-/// `guidance` is set whenever no *computable* goal produced output — either
-/// because no goals are configured at all, or because only goals whose progress
-/// tracking is not yet implemented (e.g. debt-payoff, tracked in #27) are set.
+/// `guidance` is set when no goals of any kind are configured.
 /// This prevents the payload from ever serializing to a silent empty object `{}`.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct GoalsProgress {
@@ -28,9 +27,11 @@ pub struct GoalsProgress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub emergency_fund: Option<GoalStatus>,
 
-    /// Set when no computable goal produced output — explains next steps.
-    /// Also fires when only goals with deferred computation (e.g. debt-payoff)
-    /// are configured, so the wording adapts to avoid falsely claiming "no goals".
+    /// Debt-payoff progress — present only when the goal is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debt_payoff: Option<DebtPayoffStatus>,
+
+    /// Set when no goals of any kind are configured — explains next steps.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guidance: Option<String>,
 }
@@ -40,6 +41,51 @@ pub struct GoalsProgress {
 pub struct GoalStatus {
     /// One of `"on track"`, `"drifting"`, or `"off"`.
     pub status: String,
+}
+
+/// Enriched debt-payoff progress combining plan-based and pace-based signals.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct DebtPayoffStatus {
+    /// Overall worst-of status: `"on track"`, `"drifting"`, `"off"`, or `"unknown"`.
+    pub status: String,
+    /// Total debt owed across all credit and loan accounts (positive magnitude).
+    pub total_debt: f64,
+    /// Whole months from today to the target payoff date. May be ≤ 0 if past.
+    pub months_to_target: i64,
+    /// Monthly payment required to clear total_debt by the target date.
+    /// None when months_to_target ≤ 0 or total_debt == 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_monthly: Option<f64>,
+    /// The household's planned monthly payment from the goal config.
+    /// None when monthly_payment is not set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_monthly: Option<f64>,
+    /// Plan-based signal: is the planned payment sufficient?
+    /// None when planned_monthly or required_monthly is unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_schedule: Option<String>,
+    /// Actual debt reduction last month (prior_debt − current_debt).
+    /// None when no prior-month snapshot is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_paydown: Option<f64>,
+    /// Pace-based signal: did the household actually pay down enough?
+    /// None when actual_paydown or planned_monthly is unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_pace: Option<String>,
+}
+
+/// Account types that represent debt liabilities.
+const DEBT_TYPES: &[&str] = &["credit", "loan"];
+
+/// Compute whole months from (today_year, today_month) to the leading YYYY-MM of target_date.
+///
+/// Returns a negative value when the target date is in the past.
+/// Only the year and month portions of target_date are used.
+pub fn months_to_target_from_date(target_date: &str, today_year: i64, today_month: u32) -> i64 {
+    let mut parts = target_date.splitn(3, '-');
+    let target_year: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let target_month: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (target_year - today_year) * 12 + target_month - today_month as i64
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +111,95 @@ pub fn classify_goal(actual: f64, goal: f64) -> &'static str {
 // Actuals computation helpers
 // ---------------------------------------------------------------------------
 
+/// Rank status strings for worst-of blending: higher = worse.
+fn status_rank(s: &str) -> u8 {
+    match s {
+        "on track" => 0,
+        "drifting" => 1,
+        _ => 2, // "off" and anything unexpected
+    }
+}
+
+/// Compute enriched debt-payoff progress from all inputs.
+///
+/// `today_year`/`today_month` come from the caller's date seam so this
+/// function stays hermetic (no clock reads). `prior_month` and
+/// `current_month` are `"YYYY-MM"` strings used to look up snapshot rows.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_debt_payoff(
+    goal: &crate::goals::DebtPayoffGoal,
+    accounts: &[Account],
+    snapshots: &[AccountTypeSnapshot],
+    prior_month: &str,
+    current_month: &str,
+    today_year: i64,
+    today_month: u32,
+) -> DebtPayoffStatus {
+    let total_debt = total_debt_from_accounts(accounts);
+    let months_to_target = months_to_target_from_date(&goal.target_date, today_year, today_month);
+    let planned_monthly = goal.monthly_payment;
+
+    // Signal 1 — on schedule?
+    let required_monthly = if total_debt == 0.0 {
+        Some(0.0)
+    } else if months_to_target > 0 {
+        Some(total_debt / months_to_target as f64)
+    } else {
+        None
+    };
+
+    let on_schedule: Option<String> = match (planned_monthly, required_monthly) {
+        (Some(planned), Some(required)) => Some(classify_goal(planned, required).to_string()),
+        _ => None,
+    };
+
+    // Signal 2 — on pace?
+    let actual_paydown = actual_paydown_from_snapshots(snapshots, prior_month, current_month);
+
+    let on_pace: Option<String> = match (actual_paydown, planned_monthly) {
+        (Some(paydown), Some(planned)) if paydown > 0.0 => {
+            Some(classify_goal(paydown, planned).to_string())
+        }
+        (Some(_), Some(_)) => Some("off".to_string()), // debt grew or stayed flat
+        _ => None,
+    };
+
+    // Overall status: worst of computable signals; "unknown" when none.
+    let status = if total_debt == 0.0 {
+        "on track".to_string()
+    } else if months_to_target <= 0 && total_debt > 0.0 {
+        // Target date passed with debt remaining — off regardless of signals
+        "off".to_string()
+    } else {
+        let sub_statuses: Vec<&str> = [on_schedule.as_deref(), on_pace.as_deref()]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        if sub_statuses.is_empty() {
+            "unknown".to_string()
+        } else {
+            sub_statuses
+                .iter()
+                .max_by_key(|s| status_rank(s))
+                .copied()
+                .unwrap_or("unknown")
+                .to_string()
+        }
+    };
+
+    DebtPayoffStatus {
+        status,
+        total_debt,
+        months_to_target,
+        required_monthly,
+        planned_monthly,
+        on_schedule,
+        actual_paydown,
+        on_pace,
+    }
+}
+
 /// Compute the savings rate as a percentage from cashflow data.
 /// savings_rate = (income - spending) / income * 100
 /// Returns 0.0 when income is zero to avoid division by zero.
@@ -73,6 +208,53 @@ pub fn actual_savings_rate_pct(cashflow: &Cashflow) -> f64 {
         return 0.0;
     }
     (cashflow.income - cashflow.spending) / cashflow.income * 100.0
+}
+
+/// Compute actual debt paydown from monthly snapshots.
+///
+/// Sums debt-type balances for prior_month and current_month, converts each to
+/// owed magnitude, and returns `prior_owed − current_owed`. Returns `None` when
+/// no prior-month snapshot exists (first data point — can't compute a delta).
+/// A negative result means debt grew.
+pub fn actual_paydown_from_snapshots(
+    snapshots: &[AccountTypeSnapshot],
+    prior_month: &str,
+    current_month: &str,
+) -> Option<f64> {
+    let prior_owed: f64 = snapshots
+        .iter()
+        .filter(|s| s.month == prior_month && DEBT_TYPES.contains(&s.account_type.as_str()))
+        .map(|s| (-s.balance).max(0.0))
+        .sum();
+
+    let has_prior = snapshots
+        .iter()
+        .any(|s| s.month == prior_month && DEBT_TYPES.contains(&s.account_type.as_str()));
+
+    if !has_prior {
+        return None;
+    }
+
+    let current_owed: f64 = snapshots
+        .iter()
+        .filter(|s| s.month == current_month && DEBT_TYPES.contains(&s.account_type.as_str()))
+        .map(|s| (-s.balance).max(0.0))
+        .sum();
+
+    Some(prior_owed - current_owed)
+}
+
+/// Sum the owed amount across all debt-type accounts.
+///
+/// Monarch stores liability balances as negative numbers. Owed per account =
+/// `(-current_balance).max(0.0)` so a positive balance (overpaid credit card)
+/// contributes 0, not a negative debt.
+pub fn total_debt_from_accounts(accounts: &[Account]) -> f64 {
+    accounts
+        .iter()
+        .filter(|a| DEBT_TYPES.contains(&a.account_type.name.as_str()))
+        .map(|a| (-a.current_balance).max(0.0))
+        .sum()
 }
 
 /// Compute months of expenses covered by liquid cash-equivalent accounts.
@@ -113,10 +295,23 @@ pub fn actual_reserve_months(accounts: &[Account], cashflow: &Cashflow) -> f64 {
 
 /// Compute goal progress from already-fetched Monarch data and loaded goals.
 ///
+/// `snapshots` are monthly per-type debt history; pass an empty slice when no
+/// debt-payoff goal is configured to avoid an unnecessary fetch.
+/// `prior_month` / `current_month` are `"YYYY-MM"` strings for snapshot lookup.
+/// `today` is `(year, month)` from the caller's date seam (honours `MONARCH_NOW`).
+///
 /// When no goals have been configured, returns a `guidance` message directing
 /// the household to create a goals.toml — consistent with the soft re-auth
 /// pattern (a successful MCP result whose body explains next steps).
-pub fn compute_progress(goals: &Goals, accounts: &[Account], cashflow: &Cashflow) -> GoalsProgress {
+pub fn compute_progress(
+    goals: &Goals,
+    accounts: &[Account],
+    cashflow: &Cashflow,
+    snapshots: &[AccountTypeSnapshot],
+    prior_month: &str,
+    current_month: &str,
+    today: (i64, u32),
+) -> GoalsProgress {
     let savings_rate = goals.savings_rate.as_ref().map(|g| {
         let actual = actual_savings_rate_pct(cashflow);
         GoalStatus {
@@ -131,27 +326,31 @@ pub fn compute_progress(goals: &Goals, accounts: &[Account], cashflow: &Cashflow
         }
     });
 
-    // guidance fires whenever neither computable goal is set, so the payload is
-    // never a silent empty object. Wording adapts when a debt-payoff goal is set
-    // (its progress is not computed yet — tracked in #27) so we don't falsely
-    // claim "no goals configured".
-    let has_no_computable_goals = savings_rate.is_none() && emergency_fund.is_none();
-    let guidance = has_no_computable_goals.then(|| {
-        if goals.debt_payoff.is_some() {
-            "A debt-payoff goal is configured, but debt-payoff progress tracking is \
-             not available yet (tracked in #27). Set a savings-rate or emergency-fund \
-             goal to see progress now."
-                .to_string()
-        } else {
-            "No goals configured yet. Add a goals.toml file and set \
-             MONARCH_GOALS_FILE to its path to start tracking progress."
-                .to_string()
-        }
+    let debt_payoff = goals.debt_payoff.as_ref().map(|g| {
+        compute_debt_payoff(
+            g,
+            accounts,
+            snapshots,
+            prior_month,
+            current_month,
+            today.0,
+            today.1,
+        )
+    });
+
+    // guidance fires only when no goals of any kind are configured, so the
+    // payload is never a silent empty object.
+    let has_no_goals = savings_rate.is_none() && emergency_fund.is_none() && debt_payoff.is_none();
+    let guidance = has_no_goals.then(|| {
+        "No goals configured yet. Add a goals.toml file and set \
+         MONARCH_GOALS_FILE to its path to start tracking progress."
+            .to_string()
     });
 
     GoalsProgress {
         savings_rate,
         emergency_fund,
+        debt_payoff,
         guidance,
     }
 }
@@ -437,7 +636,7 @@ mod tests {
         let goals = goals_with_savings_rate(20.0);
         // income=10000, spending=7500 → 25% actual, goal 20% → on track
         let cf = cashflow(10000.0, 7500.0);
-        let result = compute_progress(&goals, &[], &cf);
+        let result = compute_progress(&goals, &[], &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert_eq!(result.savings_rate.unwrap().status, "on track");
         assert!(result.emergency_fund.is_none());
     }
@@ -447,7 +646,7 @@ mod tests {
         let goals = goals_with_savings_rate(20.0);
         // 17% actual, goal 20% → drifting
         let cf = cashflow(10000.0, 8300.0);
-        let result = compute_progress(&goals, &[], &cf);
+        let result = compute_progress(&goals, &[], &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert_eq!(result.savings_rate.unwrap().status, "drifting");
     }
 
@@ -456,7 +655,7 @@ mod tests {
         let goals = goals_with_savings_rate(20.0);
         // 6% actual (spending=9400), goal 20% → off
         let cf = cashflow(10000.0, 9400.0);
-        let result = compute_progress(&goals, &[], &cf);
+        let result = compute_progress(&goals, &[], &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert_eq!(result.savings_rate.unwrap().status, "off");
     }
 
@@ -465,7 +664,7 @@ mod tests {
         let goals = goals_with_emergency_fund(6.0);
         let accounts = vec![savings_account(42000.0)]; // 42000/5000 = 8.4 months
         let cf = cashflow(6000.0, 5000.0);
-        let result = compute_progress(&goals, &accounts, &cf);
+        let result = compute_progress(&goals, &accounts, &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert_eq!(result.emergency_fund.unwrap().status, "on track");
     }
 
@@ -474,7 +673,7 @@ mod tests {
         let goals = goals_with_emergency_fund(6.0);
         let accounts = vec![savings_account(20000.0)]; // 20000/5000 = 4 months
         let cf = cashflow(6000.0, 5000.0);
-        let result = compute_progress(&goals, &accounts, &cf);
+        let result = compute_progress(&goals, &accounts, &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert_eq!(result.emergency_fund.unwrap().status, "drifting");
     }
 
@@ -483,7 +682,7 @@ mod tests {
         let goals = goals_with_emergency_fund(6.0);
         let accounts = vec![savings_account(10000.0)]; // 10000/5000 = 2 months
         let cf = cashflow(6000.0, 5000.0);
-        let result = compute_progress(&goals, &accounts, &cf);
+        let result = compute_progress(&goals, &accounts, &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert_eq!(result.emergency_fund.unwrap().status, "off");
     }
 
@@ -491,7 +690,15 @@ mod tests {
     fn unset_goal_is_not_reported() {
         // No goals set at all → both are None
         let goals = empty_goals();
-        let result = compute_progress(&goals, &[], &cashflow(10000.0, 8000.0));
+        let result = compute_progress(
+            &goals,
+            &[],
+            &cashflow(10000.0, 8000.0),
+            &[],
+            "2026-04",
+            "2026-05",
+            (2026, 5),
+        );
         assert!(result.savings_rate.is_none());
         assert!(result.emergency_fund.is_none());
     }
@@ -501,7 +708,15 @@ mod tests {
     #[test]
     fn empty_goals_returns_guidance_message() {
         let goals = empty_goals();
-        let result = compute_progress(&goals, &[], &cashflow(10000.0, 8000.0));
+        let result = compute_progress(
+            &goals,
+            &[],
+            &cashflow(10000.0, 8000.0),
+            &[],
+            "2026-04",
+            "2026-05",
+            (2026, 5),
+        );
         let guidance = result.guidance.as_deref().unwrap_or("");
         assert!(
             guidance.contains("no goals") || guidance.contains("goals.toml"),
@@ -515,17 +730,20 @@ mod tests {
     fn goals_present_means_no_guidance() {
         let goals = goals_with_savings_rate(20.0);
         let cf = cashflow(10000.0, 7500.0);
-        let result = compute_progress(&goals, &[], &cf);
+        let result = compute_progress(&goals, &[], &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert!(
             result.guidance.is_none(),
             "guidance should be absent when goals are configured"
         );
     }
 
-    // --- debt-payoff-only config: guidance present, mentions debt / #27 ---
+    // --- debt-payoff-only config: debt_payoff present, guidance absent (ADR 0007 #22 guard removal) ---
+    // Previously this test asserted that guidance mentioning "#27" was present.
+    // With real debt-payoff computation implemented (issue #27), a debt-only
+    // config now returns a populated debt_payoff field instead of a guidance message.
 
     #[test]
-    fn debt_payoff_only_config_yields_guidance_mentioning_debt() {
+    fn debt_payoff_only_config_returns_debt_payoff_not_guidance() {
         use crate::goals::DebtPayoffGoal;
         let goals = Goals {
             savings_rate: None,
@@ -536,14 +754,15 @@ mod tests {
             }),
         };
         let cf = cashflow(10000.0, 8000.0);
-        let result = compute_progress(&goals, &[], &cf);
-        let guidance = result
-            .guidance
-            .as_deref()
-            .expect("guidance must be Some for debt-only config");
+        let result = compute_progress(&goals, &[], &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert!(
-            guidance.contains("debt") || guidance.contains("#27"),
-            "guidance for debt-only config must mention debt or #27, got: {guidance:?}"
+            result.debt_payoff.is_some(),
+            "debt_payoff must be Some when the goal is configured"
+        );
+        assert!(
+            result.guidance.is_none(),
+            "guidance must be absent when debt_payoff goal is set; got: {:?}",
+            result.guidance
         );
     }
 
@@ -553,11 +772,343 @@ mod tests {
     fn savings_rate_only_config_has_no_guidance() {
         let goals = goals_with_savings_rate(20.0);
         let cf = cashflow(10000.0, 8000.0);
-        let result = compute_progress(&goals, &[], &cf);
+        let result = compute_progress(&goals, &[], &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert!(
             result.guidance.is_none(),
             "guidance must be absent when savings_rate goal is set"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // months_to_target_from_date — pure, hermetic, takes (today_year, today_month)
+    // -----------------------------------------------------------------------
+
+    // 9a RED: basic months calculation
+    #[test]
+    fn months_to_target_8_months_away() {
+        // MONARCH_NOW = 2026-05-15, target = 2027-01-01
+        // (2027 - 2026)*12 + (1 - 5) = 12 - 4 = 8
+        assert_eq!(months_to_target_from_date("2027-01-01", 2026, 5), 8);
+    }
+
+    // 9c TRIANGULATE: target in the same month → 0
+    #[test]
+    fn months_to_target_same_month_is_zero() {
+        assert_eq!(months_to_target_from_date("2026-05-01", 2026, 5), 0);
+    }
+
+    // 9c TRIANGULATE: target in the past → negative
+    #[test]
+    fn months_to_target_past_date_is_negative() {
+        // target = 2026-04-01, today = 2026-05 → -1
+        assert_eq!(months_to_target_from_date("2026-04-01", 2026, 5), -1);
+    }
+
+    // 9c TRIANGULATE: year boundary
+    #[test]
+    fn months_to_target_crosses_year_boundary() {
+        // target = 2027-12-01, today = 2026-05 → (1)*12 + 7 = 19
+        assert_eq!(months_to_target_from_date("2027-12-01", 2026, 5), 19);
+    }
+
+    // -----------------------------------------------------------------------
+    // total_debt_from_accounts
+    // -----------------------------------------------------------------------
+
+    fn credit_account(balance: f64) -> Account {
+        Account {
+            id: "cc1".to_string(),
+            display_name: "Credit Card".to_string(),
+            current_balance: balance,
+            account_type: AccountType {
+                name: "credit".to_string(),
+            },
+        }
+    }
+
+    fn loan_account(balance: f64) -> Account {
+        Account {
+            id: "l1".to_string(),
+            display_name: "Car Loan".to_string(),
+            current_balance: balance,
+            account_type: AccountType {
+                name: "loan".to_string(),
+            },
+        }
+    }
+
+    // 9a RED: credit account balance -5000 → owed 5000
+    #[test]
+    fn total_debt_from_negative_credit_balance() {
+        let accounts = vec![credit_account(-5000.0)];
+        assert_eq!(total_debt_from_accounts(&accounts), 5000.0);
+    }
+
+    // 9c TRIANGULATE: loan account also counts
+    #[test]
+    fn total_debt_includes_loan_accounts() {
+        let accounts = vec![credit_account(-3000.0), loan_account(-10000.0)];
+        assert_eq!(total_debt_from_accounts(&accounts), 13000.0);
+    }
+
+    // 9c TRIANGULATE: overpaid credit card (positive balance) contributes 0
+    #[test]
+    fn total_debt_overpaid_credit_contributes_zero() {
+        let accounts = vec![credit_account(50.0)];
+        assert_eq!(total_debt_from_accounts(&accounts), 0.0);
+    }
+
+    // 9c TRIANGULATE: savings account is excluded
+    #[test]
+    fn total_debt_excludes_savings_accounts() {
+        let accounts = vec![savings_account(30000.0), credit_account(-2000.0)];
+        assert_eq!(total_debt_from_accounts(&accounts), 2000.0);
+    }
+
+    // 9c TRIANGULATE: no debt accounts → 0
+    #[test]
+    fn total_debt_no_debt_accounts_is_zero() {
+        let accounts = vec![savings_account(10000.0)];
+        assert_eq!(total_debt_from_accounts(&accounts), 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // actual_paydown_from_snapshots
+    // -----------------------------------------------------------------------
+
+    fn debt_snap(month: &str, balance: f64) -> AccountTypeSnapshot {
+        AccountTypeSnapshot {
+            account_type: "credit".to_string(),
+            month: month.to_string(),
+            balance,
+        }
+    }
+
+    // 9a RED: prior month had more debt → positive paydown
+    #[test]
+    fn actual_paydown_positive_when_debt_reduced() {
+        // prior: -8000 credit → owed 8000; current: -7000 → owed 7000
+        // paydown = 8000 - 7000 = 1000
+        let prior_month = "2026-04";
+        let current_month = "2026-05";
+        let snaps = vec![
+            debt_snap(prior_month, -8000.0),
+            debt_snap(current_month, -7000.0),
+        ];
+        let result = actual_paydown_from_snapshots(&snaps, prior_month, current_month);
+        assert_eq!(result, Some(1000.0));
+    }
+
+    // 9c TRIANGULATE: no prior snapshot → None
+    #[test]
+    fn actual_paydown_none_when_no_prior_snapshot() {
+        let snaps = vec![debt_snap("2026-05", -7000.0)];
+        let result = actual_paydown_from_snapshots(&snaps, "2026-04", "2026-05");
+        assert_eq!(result, None);
+    }
+
+    // 9c TRIANGULATE: debt grew → negative paydown
+    #[test]
+    fn actual_paydown_negative_when_debt_grew() {
+        let snaps = vec![debt_snap("2026-04", -7000.0), debt_snap("2026-05", -8000.0)];
+        let result = actual_paydown_from_snapshots(&snaps, "2026-04", "2026-05");
+        assert_eq!(result, Some(-1000.0));
+    }
+
+    // 9c TRIANGULATE: multiple debt types are summed per month
+    #[test]
+    fn actual_paydown_sums_multiple_debt_types() {
+        let snaps = vec![
+            AccountTypeSnapshot {
+                account_type: "credit".to_string(),
+                month: "2026-04".to_string(),
+                balance: -3000.0,
+            },
+            AccountTypeSnapshot {
+                account_type: "loan".to_string(),
+                month: "2026-04".to_string(),
+                balance: -10000.0,
+            },
+            AccountTypeSnapshot {
+                account_type: "credit".to_string(),
+                month: "2026-05".to_string(),
+                balance: -2500.0,
+            },
+            AccountTypeSnapshot {
+                account_type: "loan".to_string(),
+                month: "2026-05".to_string(),
+                balance: -9600.0,
+            },
+        ];
+        // prior_owed = 3000 + 10000 = 13000; current_owed = 2500 + 9600 = 12100
+        // paydown = 900
+        let result = actual_paydown_from_snapshots(&snaps, "2026-04", "2026-05");
+        assert!((result.unwrap() - 900.0).abs() < 0.01);
+    }
+
+    // 9c TRIANGULATE: non-debt snapshot types are ignored
+    #[test]
+    fn actual_paydown_ignores_non_debt_snapshots() {
+        let snaps = vec![
+            AccountTypeSnapshot {
+                account_type: "depository".to_string(),
+                month: "2026-04".to_string(),
+                balance: 10000.0,
+            },
+            debt_snap("2026-04", -5000.0),
+            AccountTypeSnapshot {
+                account_type: "depository".to_string(),
+                month: "2026-05".to_string(),
+                balance: 11000.0,
+            },
+            debt_snap("2026-05", -4500.0),
+        ];
+        let result = actual_paydown_from_snapshots(&snaps, "2026-04", "2026-05");
+        assert_eq!(result, Some(500.0));
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_debt_payoff — full integration of all debt signals
+    // -----------------------------------------------------------------------
+
+    use crate::goals::DebtPayoffGoal;
+
+    fn debt_goal(target_date: &str, monthly_payment: Option<f64>) -> DebtPayoffGoal {
+        DebtPayoffGoal {
+            target_date: target_date.to_string(),
+            monthly_payment,
+        }
+    }
+
+    fn prior_and_current_snaps(prior_owed: f64, current_owed: f64) -> Vec<AccountTypeSnapshot> {
+        vec![
+            AccountTypeSnapshot {
+                account_type: "credit".to_string(),
+                month: "2026-04".to_string(),
+                balance: -prior_owed,
+            },
+            AccountTypeSnapshot {
+                account_type: "credit".to_string(),
+                month: "2026-05".to_string(),
+                balance: -current_owed,
+            },
+        ]
+    }
+
+    // 9a RED: on track when both signals are on track
+    // today = (2026, 5), target = "2027-01-01" → 8 months, total_debt=7000
+    // required = 7000/8 = 875; planned = 1000 ≥ 875 → on_schedule=on track
+    // paydown = 8000-7000=1000 ≥ 1000 → on_pace=on track
+    #[test]
+    fn compute_debt_payoff_on_track_when_both_signals_on_track() {
+        let goal = debt_goal("2027-01-01", Some(1000.0));
+        let accounts = vec![credit_account(-7000.0)];
+        let snaps = prior_and_current_snaps(8000.0, 7000.0);
+        let result = compute_debt_payoff(&goal, &accounts, &snaps, "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "on track");
+        assert_eq!(result.on_schedule.as_deref(), Some("on track"));
+        assert_eq!(result.on_pace.as_deref(), Some("on track"));
+    }
+
+    // 9c TRIANGULATE: worst-of blend picks drifting when on_schedule=drifting, on_pace=on track
+    // planned=500, required=875: 500 ≥ 875/2=437.5 → drifting (not off)
+    // paydown=500 ≥ planned=500 → on_pace=on track
+    // worst → drifting
+    #[test]
+    fn compute_debt_payoff_worst_of_picks_drifting() {
+        let goal = debt_goal("2027-01-01", Some(500.0));
+        let accounts = vec![credit_account(-7000.0)];
+        let snaps = prior_and_current_snaps(7500.0, 7000.0);
+        let result = compute_debt_payoff(&goal, &accounts, &snaps, "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "drifting");
+        assert_eq!(result.on_schedule.as_deref(), Some("drifting"));
+        assert_eq!(result.on_pace.as_deref(), Some("on track"));
+    }
+
+    // 9c TRIANGULATE: worst-of picks off when planned < half required
+    // planned=200, required=875: 200 < 875/2=437.5 → off
+    // paydown=200 = planned=200 → on_pace=on track
+    // worst → off
+    #[test]
+    fn compute_debt_payoff_worst_of_picks_off() {
+        let goal = debt_goal("2027-01-01", Some(200.0));
+        let accounts = vec![credit_account(-7000.0)];
+        let snaps = prior_and_current_snaps(7200.0, 7000.0);
+        let result = compute_debt_payoff(&goal, &accounts, &snaps, "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "off");
+        assert_eq!(result.on_schedule.as_deref(), Some("off"));
+        assert_eq!(result.on_pace.as_deref(), Some("on track"));
+    }
+
+    // 9c TRIANGULATE: already paid off → on track, required_monthly=Some(0.0)
+    #[test]
+    fn compute_debt_payoff_paid_off_is_on_track() {
+        let goal = debt_goal("2027-01-01", Some(500.0));
+        let accounts: Vec<Account> = vec![];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "on track");
+        assert_eq!(result.total_debt, 0.0);
+        assert_eq!(result.required_monthly, Some(0.0));
+    }
+
+    // 9c TRIANGULATE: target date passed with debt → on_schedule=off, status=off
+    #[test]
+    fn compute_debt_payoff_target_passed_with_debt_is_off() {
+        let goal = debt_goal("2026-04-01", Some(500.0));
+        let accounts = vec![credit_account(-3000.0)];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "off");
+        assert!(result.months_to_target <= 0);
+        assert_eq!(result.required_monthly, None);
+    }
+
+    // 9c TRIANGULATE: no monthly_payment → on_schedule/on_pace None; status unknown
+    #[test]
+    fn compute_debt_payoff_no_monthly_payment_yields_unknown() {
+        let goal = debt_goal("2027-01-01", None);
+        let accounts = vec![credit_account(-7000.0)];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "unknown");
+        assert!(result.on_schedule.is_none());
+        assert!(result.on_pace.is_none());
+        // numbers still surface
+        assert_eq!(result.total_debt, 7000.0);
+        assert_eq!(result.months_to_target, 8);
+        assert!(result.required_monthly.is_some());
+    }
+
+    // 9c TRIANGULATE: no prior snapshot → on_pace None; status driven only by on_schedule
+    // planned=500, required=875: 500 ≥ 437.5 → drifting
+    #[test]
+    fn compute_debt_payoff_no_prior_snapshot_uses_only_on_schedule() {
+        let goal = debt_goal("2027-01-01", Some(500.0));
+        let accounts = vec![credit_account(-7000.0)];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "drifting");
+        assert_eq!(result.on_schedule.as_deref(), Some("drifting"));
+        assert_eq!(result.on_pace, None);
+    }
+
+    // 9c TRIANGULATE: no prior snapshot, planned far below required → off
+    // planned=200, required=875: 200 < 437.5 → off
+    #[test]
+    fn compute_debt_payoff_no_prior_snapshot_off_schedule() {
+        let goal = debt_goal("2027-01-01", Some(200.0));
+        let accounts = vec![credit_account(-7000.0)];
+        let result = compute_debt_payoff(&goal, &accounts, &[], "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.status, "off");
+        assert_eq!(result.on_schedule.as_deref(), Some("off"));
+        assert_eq!(result.on_pace, None);
+    }
+
+    // 9c TRIANGULATE: debt grew → on_pace=off
+    #[test]
+    fn compute_debt_payoff_debt_grew_is_off_pace() {
+        let goal = debt_goal("2027-01-01", Some(1000.0));
+        let accounts = vec![credit_account(-8000.0)];
+        let snaps = prior_and_current_snaps(7000.0, 8000.0); // debt grew
+        let result = compute_debt_payoff(&goal, &accounts, &snaps, "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.on_pace.as_deref(), Some("off"));
     }
 
     #[test]
@@ -565,7 +1116,7 @@ mod tests {
         let goals = goals_with_emergency_fund(6.0);
         let accounts = vec![savings_account(30000.0)];
         let cf = cashflow(6000.0, 5000.0);
-        let result = compute_progress(&goals, &accounts, &cf);
+        let result = compute_progress(&goals, &accounts, &cf, &[], "2026-04", "2026-05", (2026, 5));
         assert!(
             result.savings_rate.is_none(),
             "savings_rate should be absent when goal not set"

@@ -43,7 +43,7 @@ Feature: Debt-payoff progress
       When the advisor reviews progress versus goals
       Then the debt-payoff progress is reported as "off"
       And the on_schedule signal is "off"
-      And the on_pace signal is "off"
+      And the on_pace signal is "on track"
 
   Rule: A debt-only config returns debt_payoff progress, not guidance
 
