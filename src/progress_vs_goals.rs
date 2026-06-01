@@ -125,8 +125,8 @@ pub fn classify_goal(actual: f64, goal: f64) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Rank status strings for worst-of blending: higher = worse.
-fn status_rank(s: &str) -> u8 {
-    match s {
+fn status_rank(status: &str) -> u8 {
+    match status {
         "on track" => 0,
         "drifting" => 1,
         _ => 2, // "off" and anything unexpected
@@ -1180,6 +1180,27 @@ mod tests {
         let snaps = prior_and_current_snaps(7000.0, 8000.0); // debt grew
         let result = compute_debt_payoff(&goal, &accounts, &snaps, "2026-04", "2026-05", 2026, 5);
         assert_eq!(result.on_pace.as_deref(), Some("off"));
+    }
+
+    // worst-of blend must be driven by on_pace when it is the worse signal.
+    // Mirror of the on_schedule-worse case: here on_schedule="on track" but
+    // on_pace="off" (debt grew), so overall status must be "off". Guards against
+    // a blend that ignores on_pace.
+    #[test]
+    fn compute_debt_payoff_worst_of_driven_by_on_pace_off() {
+        // target 2027-01-01 from (2026,5) = 8 months; debt 8000; required 8000/8=1000;
+        // planned 1000 -> on_schedule "on track". Snapshots prior 7000 / current 8000
+        // -> paydown -1000 -> on_pace "off".
+        let goal = debt_goal("2027-01-01", Some(1000.0));
+        let accounts = vec![credit_account(-8000.0)];
+        let snaps = prior_and_current_snaps(7000.0, 8000.0);
+        let result = compute_debt_payoff(&goal, &accounts, &snaps, "2026-04", "2026-05", 2026, 5);
+        assert_eq!(result.on_schedule.as_deref(), Some("on track"));
+        assert_eq!(result.on_pace.as_deref(), Some("off"));
+        assert_eq!(
+            result.status, "off",
+            "worst-of must surface on_pace 'off' over on_schedule 'on track'"
+        );
     }
 
     // -----------------------------------------------------------------------
