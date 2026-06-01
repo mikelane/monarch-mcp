@@ -423,7 +423,6 @@ fn prior_month_range() -> (String, String) {
     (start, end)
 }
 
-
 fn days_in_month(year: i64, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
