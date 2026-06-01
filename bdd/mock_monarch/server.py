@@ -17,7 +17,6 @@ Control endpoints (called by environment.py and step definitions):
 from __future__ import annotations
 
 import threading
-import uuid
 from typing import Any
 
 from flask import Flask, jsonify, request
@@ -326,88 +325,12 @@ def _handle_web_get_cash_flow_page(body: dict) -> dict:
     cf = fixtures["cashflow"]
     income = cf.get("income", 0.0)
 
-    # Determine which period this call is for.
-    # The tools.rs sends two calls: current month and prior month.
-    # We detect prior-month by checking if startDate is earlier than this month.
-    # Simple heuristic: use prior_month_spending for non-empty startDate that
-    # doesn't contain the current year-month string. Since the mock doesn't know
-    # what "current month" is, we use the stored prior_month_spending as the
-    # spending value for any call with a startDate that differs from the most
-    # recent configure call's cashflow, i.e. we return prior_month_spending when
-    # it's set and this looks like a second call.
-    #
-    # Simpler approach: always return current cashflow income + spending for the
-    # first call semantics; return prior_month_spending as sumExpense for any
-    # call. The client takes abs(), so signs don't matter for the final delta.
-    # The BDD steps configure prior_month_spending separately.
+    # Distinguish current vs prior period by startDate: parse the YYYY-MM prefix
+    # and treat any month earlier than today's (year, month) as the prior period.
+    # Prior period returns 0 income / -prior_month_spending; current returns the
+    # cashflow fixture's income / -spending.
     spending = cf.get("spending", 0.0)
     prior_spending = fixtures.get("prior_month_spending", 0.0)
-
-    # If this call has a startDate that differs from any "current month" pattern
-    # we can't know — just return prior_month_spending when it's non-zero and
-    # prior_month_spending != spending. For simplicity: return spending for both
-    # calls but use prior_spending as sumExpense when prior_month_spending is set.
-    # The net effect: financial_overview sees the same income/spending for both
-    # periods, and the BDD tests that assert prior_month_spending use spending_report.
-    #
-    # Better: tag the distinction by start date prefix (year-month).
-    # The mock is stateless about "current" date, so we return:
-    #   - If start_date looks like the prior-month pattern (any date before
-    #     the cashflow's implicit "current" period): prior spending.
-    #   - Otherwise: current spending.
-    # Since we can't know the current date, we use a flag: if the request has
-    # BOTH income and spending from cashflow configured and this is the second
-    # call, return prior. The simplest robust approach: return prior_month_spending
-    # as sumExpense whenever it's set AND income for that call is 0.
-    #
-    # Cleanest solution: always return current cashflow for current period,
-    # use prior_month_spending for prior period — detected by the BDD steps
-    # posting separate configure calls. We can't distinguish the two calls
-    # without request-side state, so we return current figures for all
-    # Web_GetCashFlowPage calls and let the client's prior-month call also
-    # pick up prior_month_spending via a special mock field.
-    #
-    # DECISION: The mock always returns the cashflow fixture's income and spending.
-    # For the prior-month call (second identical request), the client computes
-    # prior_month_spending from that response. For BDD tests that verify
-    # prior-period deltas (spending_report), the step sets prior_month_spending,
-    # which the mock returns as a separate cashflow reading by serving it as
-    # spending when income == 0. To keep it simple and reliable:
-    # Return prior_month_spending as spending when the start_date month differs
-    # from the cashflow fixture's "current" implicit month. Since both calls
-    # use real dates, and the BDD tests post separate configure calls for
-    # prior spending, we detect "prior call" by checking if income is 0 and
-    # prior_month_spending is non-zero in the fixture. This is fragile.
-    #
-    # FINAL DECISION: Use a dedicated fixture key. When tools.rs makes two calls
-    # to Web_GetCashFlowPage (current + prior), the mock serves:
-    #   - cashflow.income / cashflow.spending for the current-period call
-    #   - 0 income / prior_month_spending for the prior-period call
-    # We distinguish calls by whether the request includes "prior_period: true"
-    # in variables — but that's not how tools.rs works. Instead:
-    # The mock always returns cashflow.income and cashflow.spending. The
-    # prior-month call will also return those values, making prior_month_spending
-    # equal to current spending. BDD tests that verify prior-period delta set
-    # prior_month_spending to a different value; the mock needs to honour it.
-    #
-    # We detect prior vs current by inspecting the startDate: any call where
-    # startDate ends in a month different from the current mock "period" is
-    # treated as prior. Since we don't track time, we use the presence of a
-    # configured prior_month_spending > 0 AND a startDate that looks historically
-    # earlier (year < 2026 or month < current). Too complex.
-    #
-    # PRAGMATIC FIX: Two-call pattern with a call counter. The first call returns
-    # current cashflow; the second returns prior. Reset counter on /reset.
-    #
-    # Actually — the simplest correct approach: return sumExpense = -spending for
-    # the cashflow fixture always, and return sumExpense = -prior_month_spending
-    # when prior_month_spending is set. We expose a new fixture field
-    # "prior_cashflow" that gets populated when prior_month_spending is set.
-    # The client's prior-period call will pick it up.
-    #
-    # We detect the prior-period call by its startDate being earlier than a
-    # fixed reference. Since the mock only ever serves synthetic data, we hard-code:
-    # any call with startDate that is an earlier month than "2026-05" is prior.
 
     # Parse year-month from startDate
     is_prior = False
@@ -603,10 +526,6 @@ def _handle_common_update_transaction(body: dict) -> dict:
 
     with _fixtures_lock:
         _fixtures.setdefault("applied_changes", []).append(change_record)
-        # Resolve category name from ID for assertions that check category name
-        cat_name = category_id  # default to id if lookup fails
-        for b in _fixtures.get("budgets", []):
-            pass  # budget categories don't easily map back
         # Update the in-memory transaction so subsequent reads reflect it
         for txn in _fixtures.get("transactions", []):
             if str(txn.get("id", "")) == str(txn_id):
