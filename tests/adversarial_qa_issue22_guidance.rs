@@ -23,7 +23,7 @@ fn guidance_absent_when_savings_rate_set_others_absent() {
         emergency_fund: None,
         debt_payoff: None,
     };
-    let result = compute_progress(&goals, &[], &cf());
+    let result = compute_progress(&goals, &[], &cf(), &[], "2026-04", "2026-05", (2026, 5));
     assert!(result.guidance.is_none());
 }
 
@@ -40,7 +40,7 @@ fn guidance_absent_when_savings_rate_and_debt_payoff_set() {
             monthly_payment: None,
         }),
     };
-    let result = compute_progress(&goals, &[], &cf());
+    let result = compute_progress(&goals, &[], &cf(), &[], "2026-04", "2026-05", (2026, 5));
     assert!(result.guidance.is_none());
     // savings_rate is reported; user gets actionable content.
     assert!(result.savings_rate.is_some());
@@ -59,7 +59,7 @@ fn guidance_absent_when_all_goals_set() {
             monthly_payment: Some(500.0),
         }),
     };
-    let result = compute_progress(&goals, &[], &cf());
+    let result = compute_progress(&goals, &[], &cf(), &[], "2026-04", "2026-05", (2026, 5));
     assert!(result.guidance.is_none());
 }
 

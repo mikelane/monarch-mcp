@@ -569,14 +569,36 @@ async fn fetch_and_compute_progress(
     client: &MonarchClient,
 ) -> Result<crate::progress_vs_goals::GoalsProgress, MonarchError> {
     let goals = Goals::load_from_env().map_err(|e| MonarchError::Internal(e.to_string()))?;
-    let (cur_start, cur_end) = current_month_range();
-    let (pri_start, pri_end) = prior_month_range();
+    let today_day = today_epoch_day();
+    let (cur_start, cur_end) = current_month_range_for_day(today_day);
+    let (pri_start, pri_end) = prior_month_range_for_day(today_day);
+    let (today_year, today_month, _) = epoch_days_to_ymd(today_day);
+
+    // Derive YYYY-MM labels for snapshot lookup
+    let prior_month_label = &pri_start[..7]; // "YYYY-MM"
+    let current_month_label = &cur_start[..7];
+
+    // Fetch snapshots only when a debt-payoff goal is configured to keep the
+    // no-debt-goal path's fetch cost unchanged.
+    let snapshots = if goals.debt_payoff.is_some() {
+        client.get_snapshots_by_account_type(&pri_start).await?
+    } else {
+        vec![]
+    };
 
     let (accounts, cashflow) = tokio::try_join!(
         client.get_accounts(),
         client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
     )?;
-    Ok(compute_progress(&goals, &accounts, &cashflow))
+    Ok(compute_progress(
+        &goals,
+        &accounts,
+        &cashflow,
+        &snapshots,
+        prior_month_label,
+        current_month_label,
+        (today_year, today_month),
+    ))
 }
 
 async fn fetch_and_compute_scan(
