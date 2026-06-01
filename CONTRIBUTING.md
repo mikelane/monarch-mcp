@@ -56,6 +56,27 @@ MONARCH_LIVE=1 cargo test --test live_integration
 5. Open a PR. CI runs fmt/clippy/tests; keep it green. A non-obvious decision should land an
    ADR in `docs/decisions/NNNN-*.md`.
 
+## Commit conventions
+
+Every commit subject and the **PR title** must follow
+[Conventional Commits](https://www.conventionalcommits.org). CI enforces both.
+
+The PR title matters most: this repo squash-merges, so the PR title becomes the commit subject
+on `main`. `release-plz` reads those subjects to derive the next version and populate
+`CHANGELOG.md` — a non-conventional title silently drops the change from the changelog.
+
+**Format:** `<type>(<optional scope>)<optional !>: <description>`
+
+**Allowed types** (must match `release-plz.toml`):
+`feat` · `fix` · `perf` · `refactor` · `docs` · `test` · `chore` · `style` · `ci` · `build` · `revert`
+
+```
+feat: add net worth trend tool
+fix(client): handle 401 without panicking
+refactor!: rename spending_report parameter (breaking change)
+docs: document Monarch sign convention
+```
+
 `lefthook` runs format-check, clippy, and tests on pre-commit/pre-push — please don't bypass it.
 
 ## Data hygiene (this keeps the project publishable)

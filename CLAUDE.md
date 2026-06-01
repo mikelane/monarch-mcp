@@ -105,7 +105,10 @@ cargo test              # small tier
 
 `lefthook` runs fmt-check + clippy + tests on pre-commit/pre-push. Don't bypass it. Commits
 follow [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`, `docs:`,
-`test:`, `chore:`) — the release pipeline derives versions from them.
+`test:`, `chore:`) — the release pipeline derives versions from them. **Conventional Commit
+format is enforced in CI** on both the PR title (which becomes the squash-merge subject on
+`main`) and every individual commit. Allowed types match `release-plz.toml`:
+`feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `chore`, `style`, `ci`, `build`, `revert`.
 
 ## Definition of done
 
