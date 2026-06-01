@@ -390,11 +390,11 @@ fn parse_iso_date_to_epoch_day(s: &str) -> Option<i64> {
 
     // Validate ranges before arithmetic to prevent overflow and silent normalization
     // Year must be in 1..=9999 to bound the Hinnant formula and avoid overflow
-    if year < 1 || year > 9999 {
+    if !(1..=9999).contains(&year) {
         return None;
     }
     // Month must be 1..=12
-    if month < 1 || month > 12 {
+    if !(1..=12).contains(&month) {
         return None;
     }
     // Day must be 1..=days_in_month(year, month as u32)
