@@ -67,7 +67,7 @@ pub struct RejectedChange {
 pub struct ApplyResult {
     pub applied_changes: Vec<AppliedChange>,
     pub rejected_changes: Vec<RejectedChange>,
-    /// Total transaction count after applying — must equal the count before.
+    /// Number of changeset entries processed (applied + rejected).
     pub transaction_count: usize,
 }
 
@@ -157,9 +157,9 @@ pub enum ParsedEntry {
 ///
 /// Each `ParsedEntry` is either already-rejected (parse failed) or valid.
 /// Valid entries pass through `validate_change_entry` for any remaining
-/// business-rule checks. The `total_transaction_count` is threaded through
-/// so callers can assert the id-set is unchanged.
-pub fn partition_changeset(entries: &[ParsedEntry], total_transaction_count: usize) -> ApplyResult {
+/// business-rule checks. The returned `transaction_count` is the number of
+/// entries processed (applied + rejected).
+pub fn partition_changeset(entries: &[ParsedEntry]) -> ApplyResult {
     let mut applied_changes = Vec::new();
     let mut rejected_changes = Vec::new();
 
@@ -191,9 +191,9 @@ pub fn partition_changeset(entries: &[ParsedEntry], total_transaction_count: usi
     }
 
     ApplyResult {
+        transaction_count: applied_changes.len() + rejected_changes.len(),
         applied_changes,
         rejected_changes,
-        transaction_count: total_transaction_count,
     }
 }
 
@@ -318,7 +318,7 @@ mod tests {
     fn change_entry_with_amount_is_rejected() {
         let raw = serde_json::json!({"id": "t1", "amount": 0.0});
         let entries = parse_raw_changes(vec![raw]);
-        let result = partition_changeset(&entries, 1);
+        let result = partition_changeset(&entries);
         assert_eq!(result.rejected_changes.len(), 1, "amount must be rejected");
         assert_eq!(result.rejected_changes[0].id, "t1");
     }
@@ -331,7 +331,7 @@ mod tests {
     fn change_entry_amount_zero_is_also_rejected() {
         let raw = serde_json::json!({"id": "t1", "amount": 0.0});
         let entries = parse_raw_changes(vec![raw]);
-        let result = partition_changeset(&entries, 1);
+        let result = partition_changeset(&entries);
         assert!(
             !result.rejected_changes.is_empty(),
             "amount=0 must still be rejected"
@@ -350,22 +350,25 @@ mod tests {
             id: "t2".to_string(),
             reason: "amount_change_forbidden".to_string(),
         });
-        let result = partition_changeset(&[valid, rejected], 10);
+        let result = partition_changeset(&[valid, rejected]);
         assert_eq!(result.applied_changes.len(), 1);
         assert_eq!(result.applied_changes[0].id, "t1");
         assert_eq!(result.rejected_changes.len(), 1);
         assert_eq!(result.rejected_changes[0].id, "t2");
+        // transaction_count is derived as applied + rejected; with both buckets
+        // non-empty it must be their sum (catches a mutant that counts only one).
+        assert_eq!(result.transaction_count, 2);
     }
 
     // -----------------------------------------------------------------------
-    // 9c TRIANGULATE: transaction_count is preserved regardless of changes
+    // 9c TRIANGULATE: transaction_count equals entries processed
     // -----------------------------------------------------------------------
 
     #[test]
-    fn partition_changeset_preserves_transaction_count() {
+    fn partition_changeset_reports_entries_processed_count() {
         let entries = wrap_ok(vec![make_change(Some("t1"), Some("Coffee"))]);
-        let result = partition_changeset(&entries, 40);
-        assert_eq!(result.transaction_count, 40);
+        let result = partition_changeset(&entries);
+        assert_eq!(result.transaction_count, 1);
     }
 
     // -----------------------------------------------------------------------
@@ -374,10 +377,10 @@ mod tests {
 
     #[test]
     fn partition_changeset_handles_empty_input() {
-        let result = partition_changeset(&[], 5);
+        let result = partition_changeset(&[]);
         assert!(result.applied_changes.is_empty());
         assert!(result.rejected_changes.is_empty());
-        assert_eq!(result.transaction_count, 5);
+        assert_eq!(result.transaction_count, 0);
     }
 
     // -----------------------------------------------------------------------
@@ -390,7 +393,7 @@ mod tests {
         let raw = serde_json::json!({
             "id": "t-acct", "category": "Coffee", "account": "other-account-id"
         });
-        let result = parse_and_partition_single(raw, 1);
+        let result = parse_and_partition_single(raw);
         assert_eq!(
             result.applied_changes.len(),
             0,
@@ -412,7 +415,7 @@ mod tests {
         let raw = serde_json::json!({
             "id": "t-date", "category": "Dining", "date": "2099-01-01"
         });
-        let result = parse_and_partition_single(raw, 1);
+        let result = parse_and_partition_single(raw);
         assert_eq!(
             result.applied_changes.len(),
             0,
@@ -432,7 +435,7 @@ mod tests {
         let raw = serde_json::json!({
             "id": "t-stramt", "amount": "100.00"
         });
-        let result = parse_and_partition_single(raw, 1);
+        let result = parse_and_partition_single(raw);
         assert_eq!(
             result.applied_changes.len(),
             0,
@@ -455,7 +458,7 @@ mod tests {
         let raw = serde_json::json!({
             "id": "t-real", "amount": "bad-value"
         });
-        let result = parse_and_partition_single(raw, 1);
+        let result = parse_and_partition_single(raw);
         let has_unknown_applied = result.applied_changes.iter().any(|a| a.id == "unknown");
         assert!(
             !has_unknown_applied,
@@ -472,7 +475,7 @@ mod tests {
         let raw = serde_json::json!({
             "id": "t-tags", "category": "Dining", "tags": "not-an-array"
         });
-        let result = parse_and_partition_single(raw, 1);
+        let result = parse_and_partition_single(raw);
         // Either: parsed OK (tags ignored/coerced) with real id applied, OR
         // rejected with real id. What must NOT happen: id "unknown" in applied.
         let unknown_applied = result.applied_changes.iter().any(|a| a.id == "unknown");
@@ -493,8 +496,8 @@ mod tests {
 
     /// Helper: parse a single raw JSON value through the full parse+partition path
     /// (mirrors the tools.rs apply_approved_changeset logic).
-    fn parse_and_partition_single(raw: serde_json::Value, txn_count: usize) -> ApplyResult {
+    fn parse_and_partition_single(raw: serde_json::Value) -> ApplyResult {
         let entries = parse_raw_changes(vec![raw]);
-        partition_changeset(&entries, txn_count)
+        partition_changeset(&entries)
     }
 }

@@ -227,17 +227,23 @@ def step_assert_categorized(context, merchant: str, category: str):
 
 @then("the month still has the same {count:d} transactions")
 def step_assert_transaction_count_unchanged(context, count: int):
-    result = context.apply_result
-    actual = result.get("transaction_count")
-    if actual is None:
-        resp = requests.post(
-            f"{context.mock_base}/graphql",
-            json={"operationName": "GetTransactions", "variables": {}},
-        )
-        data = resp.json()
-        actual = len(data.get("data", {}).get("transactions", []))
+    # The id-set in the mock is the source of truth for "no transaction was
+    # created or deleted". apply_changeset only edits category/tags/notes, so
+    # the month's transaction count must be identical before and after.
+    #
+    # We deliberately do NOT read apply_result["transaction_count"] here: as of
+    # #26 that field reports the number of changeset *entries processed*
+    # (applied + rejected), not the month's transaction total — the vestigial
+    # all-transactions fetch that used to populate the total was removed.
+    resp = requests.post(
+        f"{context.mock_base}/graphql",
+        json={"operationName": "GetTransactionsList", "variables": {"filters": {}}},
+    )
+    data = resp.json()
+    actual = data.get("data", {}).get("allTransactions", {}).get("totalCount")
     assert actual == count, (
-        f"Expected {count} transactions, got {actual!r}. Full result: {result}"
+        f"Expected the month to still have {count} transactions, got {actual!r}. "
+        f"apply_result was: {context.apply_result}"
     )
 
 
