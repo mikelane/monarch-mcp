@@ -6,8 +6,6 @@ import requests
 import tomli_w
 from behave import given, then
 
-from steps.common import call_tool
-
 
 def _write_goals(context, goals: dict) -> None:
     """Write goals to the scenario's temp TOML file."""
@@ -42,17 +40,19 @@ def step_debt_goal_no_payment(context, target_date: str):
 
 @given("the household has a credit account with a balance of {balance:d} owed")
 def step_credit_account(context, balance: int):
-    """Configure a credit account whose Monarch balance is -balance (negative = owed).
+    """Configure a single credit account whose Monarch balance is ``-balance``.
 
-    Resets any previously accumulated debt accounts for this scenario so that
-    each scenario starts with a clean slate regardless of prior steps.
+    Monarch represents owed amounts as negative balances, so a balance of
+    ``balance`` owed is stored as ``-balance``. The scenario's debt accounts
+    are replaced wholesale, so each scenario starts from a clean slate.
     """
-    accounts = []  # always start fresh — scenario isolation
-    accounts.append({
-        "name": f"Credit Card {len(accounts) + 1}",
-        "type": "credit",
-        "currentBalance": -float(balance),
-    })
+    accounts = [
+        {
+            "name": "Credit Card 1",
+            "type": "credit",
+            "currentBalance": -float(balance),
+        }
+    ]
     context._debt_accounts = accounts
     requests.post(
         f"{context.mock_base}/configure",
