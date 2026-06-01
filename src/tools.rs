@@ -388,6 +388,21 @@ fn parse_iso_date_to_epoch_day(s: &str) -> Option<i64> {
     // Reject if a fourth part exists (extra dashes)
     // splitn(3,'-') stops at 3 parts so no extra check needed.
 
+    // Validate ranges before arithmetic to prevent overflow and silent normalization
+    // Year must be in 1..=9999 to bound the Hinnant formula and avoid overflow
+    if year < 1 || year > 9999 {
+        return None;
+    }
+    // Month must be 1..=12
+    if month < 1 || month > 12 {
+        return None;
+    }
+    // Day must be 1..=days_in_month(year, month as u32)
+    let max_day = days_in_month(year, month as u32) as i64;
+    if day < 1 || day > max_day {
+        return None;
+    }
+
     // Howard Hinnant civil_from_days inverse: days_from_civil
     // https://howardhinnant.github.io/date_algorithms.html
     let y = if month <= 2 { year - 1 } else { year };
@@ -734,6 +749,49 @@ mod tests {
     #[test]
     fn parse_iso_date_returns_none_for_garbage() {
         assert_eq!(parse_iso_date_to_epoch_day("garbage"), None);
+    }
+
+    #[test]
+    fn parse_iso_date_rejects_out_of_range_month() {
+        // Month > 12 should be rejected, not silently normalized
+        assert_eq!(parse_iso_date_to_epoch_day("2026-13-01"), None);
+        assert_eq!(parse_iso_date_to_epoch_day("2026-13-40"), None);
+    }
+
+    #[test]
+    fn parse_iso_date_rejects_zero_month_and_day() {
+        // Month 0, day 0 are invalid
+        assert_eq!(parse_iso_date_to_epoch_day("2026-00-00"), None);
+        assert_eq!(parse_iso_date_to_epoch_day("2026-00-15"), None);
+        assert_eq!(parse_iso_date_to_epoch_day("2026-05-00"), None);
+    }
+
+    #[test]
+    fn parse_iso_date_rejects_day_past_month_end() {
+        // February 30 doesn't exist
+        assert_eq!(parse_iso_date_to_epoch_day("2026-02-30"), None);
+        // April 31 doesn't exist
+        assert_eq!(parse_iso_date_to_epoch_day("2026-04-31"), None);
+        // June 31 doesn't exist
+        assert_eq!(parse_iso_date_to_epoch_day("2026-06-31"), None);
+    }
+
+    #[test]
+    fn parse_iso_date_does_not_panic_on_huge_year() {
+        // Must return None instead of panicking on overflow
+        assert_eq!(
+            parse_iso_date_to_epoch_day("9223372036854775807-06-15"),
+            None
+        );
+        assert_eq!(parse_iso_date_to_epoch_day("999999-06-15"), None);
+    }
+
+    #[test]
+    fn parse_iso_date_accepts_valid_dates() {
+        // Sanity check that we still accept legitimate dates
+        assert!(parse_iso_date_to_epoch_day("2026-04-30").is_some());
+        assert!(parse_iso_date_to_epoch_day("2024-02-29").is_some());
+        assert!(parse_iso_date_to_epoch_day("2026-05-31").is_some());
     }
 
     // --- current_month_range_for_day ---
