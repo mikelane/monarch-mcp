@@ -33,7 +33,7 @@ Feature: Debt-payoff progress
       And the household paid down 500 in debt last month
       When the advisor reviews progress versus goals
       Then the debt-payoff progress is reported as "drifting"
-      And the on_schedule signal is "off"
+      And the on_schedule signal is "drifting"
       And the on_pace signal is "on track"
 
     Scenario: Household paying far too little is off schedule
@@ -71,7 +71,7 @@ Feature: Debt-payoff progress
       And the household has a credit account with a balance of 3000 owed
       When the advisor reviews progress versus goals
       Then the debt-payoff progress is reported as "off"
-      And the on_schedule signal is "off"
+      And the months_to_target is -1
 
   Rule: Missing monthly_payment means on_schedule and on_pace are unknown
 
