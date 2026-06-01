@@ -6,10 +6,6 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-### Added
-
-- Debt-payoff progress in `progress_vs_goals`: two complementary signals (on_schedule from the repayment plan, on_pace from prior-month balance snapshots), overall worst-of status, and enriched numbers (`total_debt`, `months_to_target`, `required_monthly`). A debt-only config now returns actionable `debt_payoff` data instead of the previous guidance placeholder ([#27](https://github.com/mikelane/monarch-mcp/pull/27))
-
 ## [0.2.0](https://github.com/mikelane/monarch-mcp/compare/v0.1.1...v0.2.0) - 2026-06-01
 
 ### Added
