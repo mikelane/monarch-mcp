@@ -715,6 +715,111 @@ async fn inspect_transactions_returns_valid_structure_from_real_monarch() {
     }
 }
 
+/// Verify that the financial_overview fetch path succeeds end-to-end against the
+/// real Monarch API (issue #47).
+///
+/// Root cause: `u32::MAX` (4,294,967,295) overflows GraphQL's signed `Int32`
+/// (max 2,147,483,647). Monarch rejects the out-of-range limit with a server-side
+/// GraphQL error. The fix uses `i32::MAX as u32` as the effective "fetch all" limit,
+/// which fits in GraphQL `Int`, and sequences the heavy fetch after lightweight
+/// requests to avoid any remaining server-side contention.
+///
+/// RED evidence (before fix): passing u32::MAX produced:
+///   GraphQL "Something went wrong while processing: None on request_id: None."
+/// GREEN: i32::MAX as u32 fetched after lightweight requests succeeds.
+#[tokio::test]
+async fn financial_overview_concurrent_burst_succeeds_against_real_monarch() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+    let (pri_start, pri_end) = prior_month();
+
+    // Fixed pattern: lightweight requests in parallel, then heavy fetch alone.
+    // Mirrors fetch_and_compute after the issue #47 fix.
+    let (accounts, cashflow, history) = tokio::try_join!(
+        client.get_accounts(),
+        client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
+        client.get_net_worth_history(&pri_start, &pri_end),
+    )
+    .expect("parallel fetch of accounts + cashflow + net_worth_history must succeed");
+
+    eprintln!(
+        "lightweight parallel OK: accounts={} income={:.2} spending={:.2}",
+        accounts.len(),
+        cashflow.income,
+        cashflow.spending
+    );
+
+    // Heavy fetch alone — must not race any other request.
+    let transactions = client
+        .get_transactions(&cur_start, &cur_end, i32::MAX as u32)
+        .await
+        .expect("get_transactions(i32::MAX as u32) must succeed when fetched alone");
+
+    eprintln!("heavy fetch OK: transactions={}", transactions.len());
+
+    let overview = compute_overview(&accounts, &cashflow, &transactions, &history);
+    assert!(
+        overview.net_worth.is_finite(),
+        "net_worth must be finite after fixed fetch pattern, got: {}",
+        overview.net_worth
+    );
+    eprintln!("net_worth: {:.2}", overview.net_worth);
+}
+
+/// Verify that the spending_report fetch path succeeds end-to-end against the
+/// real Monarch API (issue #47).
+///
+/// Root cause: same as financial_overview — `u32::MAX` overflows GraphQL's signed
+/// `Int32`, causing Monarch to reject the transaction fetch. The fix uses
+/// `i32::MAX as u32` and sequences the heavy fetch after lightweight requests.
+#[tokio::test]
+async fn spending_report_concurrent_burst_succeeds_against_real_monarch() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+    let (pri_start, pri_end) = prior_month();
+
+    // Fixed pattern: lightweight requests in parallel, then heavy fetch alone.
+    // Mirrors fetch_and_compute_spending after the issue #47 fix.
+    let (budgets, cashflow) = tokio::try_join!(
+        client.get_budgets(&cur_start, &cur_end),
+        client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
+    )
+    .expect("parallel fetch of budgets + cashflow must succeed");
+
+    eprintln!(
+        "lightweight parallel OK: budgets={} income={:.2} spending={:.2}",
+        budgets.len(),
+        cashflow.income,
+        cashflow.spending
+    );
+
+    // Heavy fetch alone — must not race any other request.
+    let transactions = client
+        .get_transactions(&cur_start, &cur_end, i32::MAX as u32)
+        .await
+        .expect("get_transactions(i32::MAX as u32) must succeed when fetched alone");
+
+    eprintln!("heavy fetch OK: transactions={}", transactions.len());
+
+    let report = compute_spending_report(&transactions, &budgets, &cashflow);
+    assert!(
+        report.total_spent >= 0.0,
+        "total_spent must be non-negative after fixed fetch pattern, got: {}",
+        report.total_spent
+    );
+    eprintln!("total_spent: {:.2}", report.total_spent);
+}
+
 /// Verify that `financial_overview` and `spending_report` agree on true spending
 /// when operating against the real Monarch API (issue #25).
 ///

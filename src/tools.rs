@@ -508,15 +508,19 @@ fn days_in_month(year: i64, month: u32) -> u32 {
 /// Fetch all transactions for the current month without a row cap.
 ///
 /// Both `financial_overview` and `spending_report` must consume the same slice
-/// so their spending totals agree (issue #25). Using `u32::MAX` as the limit
-/// ensures no transaction is silently dropped regardless of how many the
-/// household has in a given month.
+/// so their spending totals agree (issue #25).
+///
+/// The limit is capped at `i32::MAX` (2,147,483,647) rather than `u32::MAX`
+/// (4,294,967,295) because Monarch's GraphQL schema uses a signed `Int` for the
+/// limit argument. Passing `u32::MAX` overflows GraphQL's `Int32` range and
+/// causes Monarch to return a server-side GraphQL error (issue #47).
+/// `i32::MAX` rows is effectively unbounded for any real household.
 async fn fetch_current_month_transactions(
     client: &MonarchClient,
     start: &str,
     end: &str,
 ) -> Result<Vec<crate::client::Transaction>, MonarchError> {
-    client.get_transactions(start, end, u32::MAX).await
+    client.get_transactions(start, end, i32::MAX as u32).await
 }
 
 async fn fetch_and_compute(
@@ -525,12 +529,21 @@ async fn fetch_and_compute(
     let (cur_start, cur_end) = current_month_range();
     let (pri_start, pri_end) = prior_month_range();
 
-    let (accounts, cashflow, transactions, history) = tokio::try_join!(
+    // Run the three lightweight requests in parallel, then await the heavy
+    // transaction fetch alone (issue #47).
+    //
+    // Primary fix: fetch_current_month_transactions now uses i32::MAX instead
+    // of u32::MAX, which overflowed GraphQL's signed Int32 and caused Monarch
+    // to reject the request. The sequential ordering here is belt-and-suspenders:
+    // it keeps the large fetch from racing other requests on the same connection.
+    let (accounts, cashflow, history) = tokio::try_join!(
         client.get_accounts(),
         client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
-        fetch_current_month_transactions(client, &cur_start, &cur_end),
         client.get_net_worth_history(&pri_start, &pri_end),
     )?;
+
+    let transactions = fetch_current_month_transactions(client, &cur_start, &cur_end).await?;
+
     Ok(compute_overview(
         &accounts,
         &cashflow,
@@ -545,11 +558,20 @@ async fn fetch_and_compute_spending(
     let (cur_start, cur_end) = current_month_range();
     let (pri_start, pri_end) = prior_month_range();
 
-    let (transactions, budgets, cashflow) = tokio::try_join!(
-        fetch_current_month_transactions(client, &cur_start, &cur_end),
+    // Run the lightweight budget and cashflow fetches in parallel, then await
+    // the heavy transaction fetch alone (issue #47).
+    //
+    // Primary fix: fetch_current_month_transactions now uses i32::MAX instead
+    // of u32::MAX (which overflowed GraphQL's signed Int32). The sequential
+    // ordering here is belt-and-suspenders against any remaining server-side
+    // contention from a large transaction payload.
+    let (budgets, cashflow) = tokio::try_join!(
         client.get_budgets(&cur_start, &cur_end),
         client.get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end),
     )?;
+
+    let transactions = fetch_current_month_transactions(client, &cur_start, &cur_end).await?;
+
     Ok(compute_spending_report(&transactions, &budgets, &cashflow))
 }
 
