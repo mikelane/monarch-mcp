@@ -1066,4 +1066,88 @@ mod tests {
         // 2026-02-15 minus 6 months = 2025-08-01
         assert_eq!(months_ago_start_for_day(day("2026-02-15"), 6), "2025-08-01");
     }
+
+    // --- Large (live) regression tests for issue #47 ---
+    //
+    // These tests live here (inside the crate) so they can call the private
+    // `fetch_and_compute` and `fetch_and_compute_spending` functions directly.
+    // An external integration test in `tests/` cannot reach private helpers, so
+    // it would be forced to re-implement the fetch pattern inline — a copy that
+    // could not detect a revert of the `i32::MAX` fix (ADR 0008, testing-seam
+    // decision: prefer in-crate `#[cfg(test)]` over exposing orchestration as
+    // `pub(crate)` or `pub`).
+    //
+    // Gated by `MONARCH_LIVE=1` so `cargo test` and CI remain hermetic.
+    // Run with:
+    //   MONARCH_LIVE=1 cargo test --lib -- tools::tests::financial_overview_concurrent_burst
+    //   MONARCH_LIVE=1 cargo test --lib -- tools::tests::spending_report_concurrent_burst
+
+    /// Verify that the financial_overview fetch path succeeds end-to-end against
+    /// the real Monarch API (issue #47).
+    ///
+    /// Calls the production `fetch_and_compute` function directly so that a revert
+    /// of the `i32::MAX` limit back to `u32::MAX` inside
+    /// `fetch_current_month_transactions` causes this test to fail (the GraphQL
+    /// server rejects the out-of-range value with a server-side error).
+    ///
+    /// RED evidence (before fix): `u32::MAX` produced:
+    ///   GraphQL "Something went wrong while processing: None on request_id: None."
+    /// GREEN: `i32::MAX as u32` passes, and this test verifies that invariant holds.
+    #[tokio::test]
+    async fn financial_overview_concurrent_burst_exercises_production_fetch_path() {
+        if std::env::var("MONARCH_LIVE")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+            let mut client = crate::client::MonarchClient::new(base);
+            client.resolve_token_from_env_or_disk();
+
+            let overview = fetch_and_compute(&client).await.expect(
+                "fetch_and_compute must succeed with i32::MAX limit — \
+                         if this fails, the i32::MAX fix may have been reverted to u32::MAX",
+            );
+
+            assert!(
+                overview.net_worth.is_finite(),
+                "net_worth must be finite after fixed fetch pattern, got: {}",
+                overview.net_worth
+            );
+            eprintln!("net_worth: {:.2}", overview.net_worth);
+        } else {
+            eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        }
+    }
+
+    /// Verify that the spending_report fetch path succeeds end-to-end against
+    /// the real Monarch API (issue #47).
+    ///
+    /// Calls the production `fetch_and_compute_spending` function directly so that
+    /// a revert of the `i32::MAX` limit back to `u32::MAX` inside
+    /// `fetch_current_month_transactions` causes this test to fail.
+    #[tokio::test]
+    async fn spending_report_concurrent_burst_exercises_production_fetch_path() {
+        if std::env::var("MONARCH_LIVE")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+            let mut client = crate::client::MonarchClient::new(base);
+            client.resolve_token_from_env_or_disk();
+
+            let report = fetch_and_compute_spending(&client).await.expect(
+                "fetch_and_compute_spending must succeed with i32::MAX limit — \
+                         if this fails, the i32::MAX fix may have been reverted to u32::MAX",
+            );
+
+            assert!(
+                report.total_spent >= 0.0,
+                "total_spent must be non-negative after fixed fetch pattern, got: {}",
+                report.total_spent
+            );
+            eprintln!("total_spent: {:.2}", report.total_spent);
+        } else {
+            eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        }
+    }
 }

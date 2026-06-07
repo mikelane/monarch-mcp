@@ -60,6 +60,17 @@ contention from a large response payload on the same HTTP/2 connection.
 - Future callers that need an unbounded fetch must use `i32::MAX as u32`, not
   `u32::MAX`. A comment in `fetch_current_month_transactions` documents why.
 - The large (live) test tier now includes two regression tests
-  (`financial_overview_concurrent_burst_succeeds_against_real_monarch` and
-  `spending_report_concurrent_burst_succeeds_against_real_monarch`) that exercise
-  the corrected fetch pattern against the real Monarch API.
+  (`financial_overview_concurrent_burst_exercises_production_fetch_path` and
+  `spending_report_concurrent_burst_exercises_production_fetch_path`) that call
+  the private `fetch_and_compute` / `fetch_and_compute_spending` functions directly,
+  ensuring a revert of the `i32::MAX` fix would cause them to fail.
+
+## Testing-seam decision
+
+The regression tests live inside `src/tools.rs` under `#[cfg(test)]`, not in
+`tests/live_integration.rs`. An external integration test (separate crate) cannot
+reach private helpers, so it must re-implement the fetch pattern inline — a copy
+that does not guard the production code path. In-crate `#[cfg(test)]` tests call
+the real orchestration functions directly and are gated by `MONARCH_LIVE=1` so
+`cargo test` and CI remain hermetic. `pub(crate)` exposure was not needed and was
+avoided to keep the public API surface minimal.
