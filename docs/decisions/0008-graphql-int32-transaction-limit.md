@@ -29,9 +29,10 @@ range −2,147,483,648 to 2,147,483,647). Passing `u32::MAX` (4,294,967,295) ove
 that range. Monarch's resolver receives an out-of-range value and returns the opaque
 server-side error rather than a validation message.
 
-This was misdiagnosed as a concurrency issue because the symptom only appeared when
-multiple requests fired together (masking that the transaction request itself was
-always broken, just not tested in isolation at that limit value).
+This was misdiagnosed as a concurrency issue because the symptom only surfaced in
+practice when multiple requests fired together. That masked the real cause: the
+transaction request itself was always broken at this limit value, but it was never
+tested in isolation until the live probing above.
 
 ## Decision
 
