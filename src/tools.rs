@@ -1108,12 +1108,30 @@ mod tests {
                          if this fails, the i32::MAX fix may have been reverted to u32::MAX",
             );
 
+            // Net-worth fields must be finite — a NaN/Inf would mean the signed-
+            // balance sum saw garbage rather than real account data.
             assert!(
-                overview.net_worth.is_finite(),
-                "net_worth must be finite after fixed fetch pattern, got: {}",
-                overview.net_worth
+                overview.net_worth.is_finite() && overview.net_worth_change.is_finite(),
+                "net_worth and net_worth_change must be finite, got {} / {}",
+                overview.net_worth,
+                overview.net_worth_change,
             );
-            eprintln!("net_worth: {:.2}", overview.net_worth);
+            // The cashflow block is computed from the transaction slice the
+            // i32::MAX fetch returns. Assert the identity net == income − spending
+            // holds end-to-end: a partial/garbled transaction response (the failure
+            // mode the fix prevents) would break this equality — a non-vacuous check.
+            let cf = &overview.cashflow;
+            assert!(
+                (cf.net - (cf.income - cf.spending)).abs() < 1e-6,
+                "cashflow identity net == income − spending must hold: net={}, income={}, spending={}",
+                cf.net,
+                cf.income,
+                cf.spending,
+            );
+            eprintln!(
+                "net_worth: {:.2}, income: {:.2}, spending: {:.2}, net: {:.2}",
+                overview.net_worth, cf.income, cf.spending, cf.net,
+            );
         } else {
             eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
         }
@@ -1140,12 +1158,23 @@ mod tests {
                          if this fails, the i32::MAX fix may have been reverted to u32::MAX",
             );
 
+            // total_spent and the per-category report magnitudes are both derived
+            // from the same fetched transaction slice (i32::MAX fetch) and apply the
+            // same income/transfer exclusions, so they MUST sum equal. This is a
+            // real internal-consistency invariant — unlike `>= 0.0`, which is a
+            // tautology since total_spent is documented as a positive magnitude.
+            let category_sum: f64 = report.by_category.values().map(|c| c.spent).sum();
             assert!(
-                report.total_spent >= 0.0,
-                "total_spent must be non-negative after fixed fetch pattern, got: {}",
-                report.total_spent
+                (report.total_spent - category_sum).abs() < 1e-6,
+                "total_spent must equal the sum of per-category magnitudes: \
+                 total_spent={}, category_sum={}",
+                report.total_spent,
+                category_sum,
             );
-            eprintln!("total_spent: {:.2}", report.total_spent);
+            eprintln!(
+                "total_spent: {:.2}, category_sum: {:.2}",
+                report.total_spent, category_sum,
+            );
         } else {
             eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
         }
