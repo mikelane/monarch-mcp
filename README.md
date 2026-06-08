@@ -44,6 +44,7 @@ into one decision-ready result (not 1:1 API wrappers you could replace with `cur
 | `cashflow_forecast` | Upcoming bills + income → projected month-end position + shortfall warnings |
 | `net_worth_trend` | Net worth over time, deltas by account type, biggest movers |
 | `recurring_scan` | New / changed / "creeping" subscriptions and upcoming renewals |
+| `account_inventory` | All accounts bucketed by retirement-planning role — tax-advantaged, taxable brokerage, cash, other assets, liabilities — with a net-worth rollup |
 | `triage_uncategorized` + `apply_changeset` | Propose categories from your own history, then commit only what you approve |
 
 ## Quick start

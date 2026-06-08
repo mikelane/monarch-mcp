@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- add account_inventory tool — groups all accounts into retirement-planning buckets (tax-advantaged, taxable brokerage, cash, other assets, liabilities) with per-bucket totals and a net-worth rollup ([#50](https://github.com/mikelane/monarch-mcp/issues/50))
+
 ## [0.3.0](https://github.com/mikelane/monarch-mcp/compare/v0.2.0...v0.3.0) - 2026-06-01
 
 ### Added
