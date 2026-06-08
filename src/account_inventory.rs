@@ -165,21 +165,13 @@ fn assign_brokerage_bucket(subtype: Option<&AccountSubtype>) -> (String, bool) {
     }
 }
 
-/// Build an `AccountEntry` from an `Account`, flagging balance_unknown when
-/// the client coerced a null balance to 0.0.
+/// Build an `AccountEntry` from an `Account`, propagating `balance_unknown`
+/// when Monarch returned `null` for `currentBalance`.
 ///
-/// The client always stores 0.0 for null balances (ADR 0003). We detect
-/// "balance was null" by checking the `balance_null` flag that the compute
-/// layer receives — except the client doesn't expose that flag. Instead, we
-/// rely on callers passing a pre-computed flag via `balance_unknown`. For
-/// now, this function receives the raw account and sets `balance_unknown`
-/// conservatively to `false`; the caller is responsible for tracking which
-/// accounts had null balances when that precision is needed.
-///
-/// Note: the client currently coerces null → 0.0 without preserving the
-/// original null. A follow-on could add an `Option<f64>` field to `Account`
-/// to distinguish "zero" from "unknown". For Phase 1 we accept that all 0.0
-/// balances on non-depository accounts may be either real zeros or unknowns.
+/// The client coerces a null balance to 0.0 but preserves the fact that it was
+/// null in `Account::balance_was_null` (ADR 0003). We copy that flag straight
+/// onto the entry's `balance_unknown`, so consumers can distinguish a real 0.0
+/// balance from a placeholder for an unknown one.
 fn build_entry(account: &Account, unknown_subtype: bool) -> AccountEntry {
     AccountEntry {
         display_name: account.display_name.clone(),
