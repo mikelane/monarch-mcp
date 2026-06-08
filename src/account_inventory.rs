@@ -412,6 +412,36 @@ mod tests {
         assert!((inv.buckets[BUCKET_LIABILITIES].total - (-5_000.0)).abs() < 0.01);
     }
 
+    // 9c TRIANGULATE: completely unknown type with positive balance → other_assets + flagged
+    #[test]
+    fn unknown_type_positive_balance_falls_back_to_other_assets_and_is_flagged() {
+        let accounts = vec![account("collectible", Some("art"), 10_000.0, false)];
+        let inv = compute_account_inventory(&accounts);
+        assert!(
+            inv.buckets.contains_key(BUCKET_OTHER_ASSETS),
+            "unknown type with positive balance must land in other_assets"
+        );
+        assert!(
+            inv.buckets[BUCKET_OTHER_ASSETS].accounts[0].unknown_subtype,
+            "unknown type must be flagged"
+        );
+    }
+
+    // 9c TRIANGULATE: completely unknown type with negative balance → liabilities + flagged
+    #[test]
+    fn unknown_type_negative_balance_falls_back_to_liabilities_and_is_flagged() {
+        let accounts = vec![account("mystery", None, -500.0, false)];
+        let inv = compute_account_inventory(&accounts);
+        assert!(
+            inv.buckets.contains_key(BUCKET_LIABILITIES),
+            "unknown type with negative balance must land in liabilities"
+        );
+        assert!(
+            inv.buckets[BUCKET_LIABILITIES].accounts[0].unknown_subtype,
+            "unknown type must be flagged"
+        );
+    }
+
     // 9c TRIANGULATE: per-bucket total matches sum of account balances
     #[test]
     fn tax_advantaged_total_is_sum_of_accounts() {
