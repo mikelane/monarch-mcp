@@ -63,28 +63,59 @@ where
     Ok(opt.unwrap_or(0.0))
 }
 
+/// Raw serde target for a Monarch account — preserves `currentBalance` as
+/// `Option<f64>` so callers can distinguish `null` (unknown) from `0.0` (real zero).
+/// Converted to [`Account`] via `From<AccountRaw>`.
 #[derive(Debug, Deserialize)]
+struct AccountRaw {
+    pub id: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    /// `None` when Monarch sent JSON `null` (unsynced/manual account).
+    #[serde(rename = "currentBalance")]
+    pub current_balance: Option<f64>,
+    #[serde(rename = "type")]
+    pub account_type: AccountType,
+    pub subtype: Option<AccountSubtype>,
+    #[serde(rename = "isHidden")]
+    pub is_hidden: bool,
+}
+
+impl From<AccountRaw> for Account {
+    fn from(raw: AccountRaw) -> Self {
+        Account {
+            id: raw.id,
+            display_name: raw.display_name,
+            balance_was_null: raw.current_balance.is_none(),
+            current_balance: raw.current_balance.unwrap_or(0.0),
+            account_type: raw.account_type,
+            subtype: raw.subtype,
+            is_hidden: raw.is_hidden,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Account {
     #[allow(dead_code)]
     pub id: String,
-    #[serde(rename = "displayName")]
     #[allow(dead_code)]
     pub display_name: String,
     /// Monarch sends `null` for unsynced or manually-tracked accounts.
     /// A null balance means "balance unknown" — we treat it as 0.0 so one
     /// unsynced account never fails the entire accounts parse.
-    #[serde(
-        rename = "currentBalance",
-        deserialize_with = "deserialize_null_f64_as_zero"
-    )]
     pub current_balance: f64,
-    #[serde(rename = "type")]
+    /// `true` when Monarch returned `null` for `currentBalance`.
+    /// The `current_balance` field is 0.0 in that case — a placeholder, not
+    /// a real zero balance. Downstream consumers (e.g. `account_inventory`)
+    /// use this flag to surface `balance_unknown` so stale accounts do not
+    /// masquerade as real $0 balances.
+    pub balance_was_null: bool,
     pub account_type: AccountType,
     /// Monarch subtype — nullable per ADR 0003. `None` when Monarch returns
     /// `null` (e.g. some manually-tracked accounts have no subtype).
     pub subtype: Option<AccountSubtype>,
     /// Whether the account is hidden in the Monarch UI.
-    #[serde(rename = "isHidden")]
     pub is_hidden: bool,
 }
 
@@ -621,9 +652,9 @@ impl MonarchClient {
                 json!({}),
             )
             .await?;
-        let accounts: Vec<Account> = serde_json::from_value(data["accounts"].clone())
+        let raw: Vec<AccountRaw> = serde_json::from_value(data["accounts"].clone())
             .map_err(|e| MonarchError::Internal(format!("parse accounts: {e}")))?;
-        Ok(accounts)
+        Ok(raw.into_iter().map(Account::from).collect())
     }
 
     /// Fetch transactions for a date range.

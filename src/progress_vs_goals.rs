@@ -488,6 +488,7 @@ mod tests {
             id: "s1".to_string(),
             display_name: "Emergency Fund".to_string(),
             current_balance: balance,
+            balance_was_null: false,
             account_type: AccountType {
                 name: "savings".to_string(),
             },
@@ -501,6 +502,7 @@ mod tests {
             id: "c1".to_string(),
             display_name: "Checking".to_string(),
             current_balance: balance,
+            balance_was_null: false,
             account_type: AccountType {
                 name: "checking".to_string(),
             },
@@ -514,6 +516,7 @@ mod tests {
             id: "mm1".to_string(),
             display_name: "HYSA".to_string(),
             current_balance: balance,
+            balance_was_null: false,
             account_type: AccountType {
                 name: "money_market".to_string(),
             },
@@ -527,6 +530,7 @@ mod tests {
             id: "b1".to_string(),
             display_name: "Brokerage".to_string(),
             current_balance: balance,
+            balance_was_null: false,
             account_type: AccountType {
                 name: "brokerage".to_string(),
             },
@@ -540,6 +544,7 @@ mod tests {
             id: "r1".to_string(),
             display_name: "401k".to_string(),
             current_balance: balance,
+            balance_was_null: false,
             account_type: AccountType {
                 name: "retirement".to_string(),
             },
@@ -901,6 +906,7 @@ mod tests {
             id: "cc1".to_string(),
             display_name: "Credit Card".to_string(),
             current_balance: balance,
+            balance_was_null: false,
             account_type: AccountType {
                 name: "credit".to_string(),
             },
@@ -914,6 +920,7 @@ mod tests {
             id: "l1".to_string(),
             display_name: "Car Loan".to_string(),
             current_balance: balance,
+            balance_was_null: false,
             account_type: AccountType {
                 name: "loan".to_string(),
             },

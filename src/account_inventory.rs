@@ -187,7 +187,7 @@ fn build_entry(account: &Account, unknown_subtype: bool) -> AccountEntry {
         subtype_name: account.subtype.as_ref().map(|s| s.name.clone()),
         subtype_display: account.subtype.as_ref().map(|s| s.display.clone()),
         balance: account.current_balance,
-        balance_unknown: false, // See doc comment — Phase 1 limitation.
+        balance_unknown: account.balance_was_null,
         is_hidden: account.is_hidden,
         unknown_subtype,
     }
@@ -235,6 +235,7 @@ mod tests {
             id: format!("{type_name}-{balance}"),
             display_name: format!("{type_name} account"),
             current_balance: balance,
+            balance_was_null: false,
             account_type: AccountType {
                 name: type_name.to_string(),
             },
@@ -243,6 +244,23 @@ mod tests {
                 display: n.to_string(),
             }),
             is_hidden,
+        }
+    }
+
+    fn account_with_null_balance(type_name: &str, subtype_name: Option<&str>) -> Account {
+        Account {
+            id: format!("{type_name}-null"),
+            display_name: format!("{type_name} account"),
+            current_balance: 0.0,
+            balance_was_null: true,
+            account_type: AccountType {
+                name: type_name.to_string(),
+            },
+            subtype: subtype_name.map(|n| AccountSubtype {
+                name: n.to_string(),
+                display: n.to_string(),
+            }),
+            is_hidden: false,
         }
     }
 
@@ -439,6 +457,35 @@ mod tests {
         assert!(
             inv.buckets[BUCKET_LIABILITIES].accounts[0].unknown_subtype,
             "unknown type must be flagged"
+        );
+    }
+
+    // Regression (BUG A): null currentBalance → balance_unknown true, balance 0.0 flows through.
+    #[test]
+    fn null_balance_sets_balance_unknown_true() {
+        let accounts = vec![account_with_null_balance("depository", Some("savings"))];
+        let inv = compute_account_inventory(&accounts);
+        let entry = &inv.buckets["cash"].accounts[0];
+        assert!(
+            entry.balance_unknown,
+            "null currentBalance must set balance_unknown=true"
+        );
+        assert!(
+            (entry.balance - 0.0).abs() < f64::EPSILON,
+            "null balance must coerce to 0.0, got {}",
+            entry.balance
+        );
+    }
+
+    // Regression (BUG A): a real 0.0 balance must NOT set balance_unknown.
+    #[test]
+    fn real_zero_balance_does_not_set_balance_unknown() {
+        let accounts = vec![account("depository", Some("savings"), 0.0, false)];
+        let inv = compute_account_inventory(&accounts);
+        let entry = &inv.buckets["cash"].accounts[0];
+        assert!(
+            !entry.balance_unknown,
+            "a real 0.0 balance must not set balance_unknown"
         );
     }
 
