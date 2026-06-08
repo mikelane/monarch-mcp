@@ -18,43 +18,46 @@ that called `GetAccounts` against the production Monarch API and printed each ac
 
 ## Discovered Vocabulary (captured 2026-06-07 from real Monarch API)
 
-The household has 37 accounts. Complete raw type/subtype vocabulary:
+The exploration run covered a multi-account household. The `type.name` / `subtype.name` /
+`subtype.display` strings below are the real Monarch schema values; the "Example" column uses
+**synthetic placeholder** account names only (per the repo's data-hygiene policy — never commit
+real account names, numbers, balances, or institution-identifying detail).
 
 ### `type = "depository"` (cash accounts)
-| subtype.name | subtype.display | Example account |
+| subtype.name | subtype.display | Example account (synthetic) |
 |---|---|---|
-| `checking` | `Checking` | Mike's Checking Account, Rebecca's Checking |
-| `savings` | `Savings` | Emergency Fund, Mike's Savings, Robin Savings |
-| `paypal` | `Mobile Payment System` | PayPal |
+| `checking` | `Checking` | Primary Checking, Secondary Checking |
+| `savings` | `Savings` | Emergency Fund, Savings |
+| `paypal` | `Mobile Payment System` | Mobile Payment Account |
 
-Note: One account ("IRA ...6382") appears as `type="depository"` `subtype="savings"` — this
-is Monarch's own classification and is treated as cash (depository), not tax-advantaged.
-The name says "IRA" but Monarch's data layer classifies it as a depository savings account.
+Note: One account classified by Monarch as `type="depository"` `subtype="savings"` is treated
+as cash (depository), not tax-advantaged, even when the account's user-given name suggests a
+retirement vehicle — we follow Monarch's own data-layer classification, not the display name.
 
 ### `type = "brokerage"` (investment accounts — refined by subtype)
-| subtype.name | subtype.display | Bucket | Example |
+| subtype.name | subtype.display | Bucket | Example (synthetic) |
 |---|---|---|---|
-| `brokerage` | `Brokerage (Taxable)` | taxable_brokerage | Individual - TOD, joint brokerage |
-| `stock_plan` | `Stock Plan` | taxable_brokerage | AMAZON RSU |
+| `brokerage` | `Brokerage (Taxable)` | taxable_brokerage | Taxable Brokerage, Joint Brokerage |
+| `stock_plan` | `Stock Plan` | taxable_brokerage | Employer RSU Plan |
 | `health_savings_account` | `Health Savings Account (HSA)` | tax_advantaged | Health Savings Account |
-| `st_401k` | `401k` | tax_advantaged | DATA.AI 401k, GD 401k, Amazon 401k |
-| `roth` | `Roth IRA` | tax_advantaged | Roth IRA Brokerage Account |
+| `st_401k` | `401k` | tax_advantaged | Employer 401k |
+| `roth` | `Roth IRA` | tax_advantaged | Roth IRA Brokerage |
 
 ### `type = "credit"` (liabilities)
-| subtype.name | subtype.display | Example |
+| subtype.name | subtype.display | Example (synthetic) |
 |---|---|---|
-| `credit_card` | `Credit Card` | Delta Reserve, Apple Card, Costco Visa |
+| `credit_card` | `Credit Card` | Rewards Card, Store Card |
 
 ### `type = "loan"` (liabilities)
-| subtype.name | subtype.display | Example |
+| subtype.name | subtype.display | Example (synthetic) |
 |---|---|---|
-| `other` | `Other` | Mortgage (WA 98660), Account (...6046) |
+| `other` | `Other` | Mortgage, Personal Loan |
 | `line_of_credit` | `Line of Credit` | Line Of Credit |
 
 ### `type = "vehicle"` (other assets)
-| subtype.name | subtype.display | Example |
+| subtype.name | subtype.display | Example (synthetic) |
 |---|---|---|
-| `car` | `Car` | 2018 Mini Countryman, Sassy |
+| `car` | `Car` | Family Car, Second Car |
 
 ## Bucketing Decision
 
@@ -62,7 +65,7 @@ Five buckets, applied in order of precision (type + subtype → type fallback):
 
 | Bucket | `type` | `subtype.name` (if applicable) | Sign |
 |---|---|---|---|
-| `taxable_brokerage` | `brokerage` | `brokerage`, `stock_plan` | positive (asset) |
+| `taxable_brokerage` | `brokerage` | `brokerage`, `stock_plan`, or unrecognized | positive (asset) |
 | `tax_advantaged` | `brokerage` | `health_savings_account`, `st_401k`, `roth` | positive (asset) |
 | `cash` | `depository` | any | positive (asset) |
 | `other_assets` | `vehicle` | any | positive (asset) |
