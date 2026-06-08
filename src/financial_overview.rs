@@ -86,6 +86,8 @@ mod tests {
             account_type: AccountType {
                 name: "checking".to_string(),
             },
+            subtype: None,
+            is_hidden: false,
         }
     }
 

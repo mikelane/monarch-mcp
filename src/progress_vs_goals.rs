@@ -491,6 +491,8 @@ mod tests {
             account_type: AccountType {
                 name: "savings".to_string(),
             },
+            subtype: None,
+            is_hidden: false,
         }
     }
 
@@ -502,6 +504,8 @@ mod tests {
             account_type: AccountType {
                 name: "checking".to_string(),
             },
+            subtype: None,
+            is_hidden: false,
         }
     }
 
@@ -513,6 +517,8 @@ mod tests {
             account_type: AccountType {
                 name: "money_market".to_string(),
             },
+            subtype: None,
+            is_hidden: false,
         }
     }
 
@@ -524,6 +530,8 @@ mod tests {
             account_type: AccountType {
                 name: "brokerage".to_string(),
             },
+            subtype: None,
+            is_hidden: false,
         }
     }
 
@@ -535,6 +543,8 @@ mod tests {
             account_type: AccountType {
                 name: "retirement".to_string(),
             },
+            subtype: None,
+            is_hidden: false,
         }
     }
 
@@ -894,6 +904,8 @@ mod tests {
             account_type: AccountType {
                 name: "credit".to_string(),
             },
+            subtype: None,
+            is_hidden: false,
         }
     }
 
@@ -905,6 +917,8 @@ mod tests {
             account_type: AccountType {
                 name: "loan".to_string(),
             },
+            subtype: None,
+            is_hidden: false,
         }
     }
 

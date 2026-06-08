@@ -80,11 +80,29 @@ pub struct Account {
     pub current_balance: f64,
     #[serde(rename = "type")]
     pub account_type: AccountType,
+    /// Monarch subtype — nullable per ADR 0003. `None` when Monarch returns
+    /// `null` (e.g. some manually-tracked accounts have no subtype).
+    pub subtype: Option<AccountSubtype>,
+    /// Whether the account is hidden in the Monarch UI.
+    #[serde(rename = "isHidden")]
+    pub is_hidden: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AccountType {
     pub name: String,
+}
+
+/// Account subtype from Monarch's `subtype { name display }` field.
+///
+/// Nullable per ADR 0003 — some account types (e.g. manually-tracked
+/// real estate) have no subtype. Always use `Option<AccountSubtype>`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AccountSubtype {
+    pub name: String,
+    /// Human-readable label from Monarch (e.g. "401k", "Roth IRA").
+    /// Surfaced in `account_inventory` output for display purposes.
+    pub display: String,
 }
 
 /// A transaction as consumed by spending_report.rs and triage.rs.
@@ -1396,6 +1414,60 @@ mod tests {
             matches!(err, MonarchError::SessionExpired),
             "expected SessionExpired, got: {err:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // GetAccounts: subtype and is_hidden are captured (issue #50)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_accounts_captures_subtype_and_is_hidden() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "accounts": [
+                        {
+                            "id": "acct-401k",
+                            "displayName": "Fidelity 401k",
+                            "currentBalance": 120000.0,
+                            "isHidden": false,
+                            "type": {"name": "investment", "display": "Investment", "__typename": "AccountType"},
+                            "subtype": {"name": "four_oh_one_k", "display": "401k", "__typename": "AccountSubtype"},
+                            "__typename": "Account"
+                        },
+                        {
+                            "id": "acct-hidden",
+                            "displayName": "Old Savings",
+                            "currentBalance": 0.0,
+                            "isHidden": true,
+                            "type": {"name": "depository", "display": "Depository", "__typename": "AccountType"},
+                            "subtype": null,
+                            "__typename": "Account"
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let accounts = client.get_accounts().await.unwrap();
+        assert_eq!(accounts.len(), 2);
+
+        let k401 = &accounts[0];
+        assert_eq!(k401.display_name, "Fidelity 401k");
+        assert_eq!(
+            k401.subtype.as_ref().map(|s| s.name.as_str()),
+            Some("four_oh_one_k"),
+            "subtype name must be captured"
+        );
+        assert!(!k401.is_hidden, "is_hidden must be false");
+
+        let hidden = &accounts[1];
+        assert!(hidden.subtype.is_none(), "null subtype must parse as None");
+        assert!(hidden.is_hidden, "is_hidden must be true");
     }
 
     // -----------------------------------------------------------------------
