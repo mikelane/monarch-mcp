@@ -92,7 +92,7 @@ def step_assert_bucket_count_plural(context, bucket: str, count: int):
     _assert_bucket_account_count(context, bucket, count)
 
 
-def _assert_bucket_account_count(context, bucket: str, expected: int):
+def _assert_bucket_account_count(context, bucket: str, expected: int) -> None:
     result = context.inventory_result
     buckets = result.get("buckets", {})
     assert bucket in buckets, f"Bucket {bucket!r} not found"
