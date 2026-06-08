@@ -949,7 +949,10 @@ async fn account_inventory_returns_valid_structure() {
     eprintln!("total_assets:      {:.2}", rollup.total_assets);
     eprintln!("total_liabilities: {:.2}", rollup.total_liabilities);
     eprintln!("net_worth:         {:.2}", rollup.net_worth);
-    eprintln!("buckets: {:?}", inventory.buckets.keys().collect::<Vec<_>>());
+    eprintln!(
+        "buckets: {:?}",
+        inventory.buckets.keys().collect::<Vec<_>>()
+    );
 
     // Count unknown subtypes — any non-zero count is a signal to update ADR 0009.
     let unknown_count: usize = inventory
