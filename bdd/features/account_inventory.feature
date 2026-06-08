@@ -131,6 +131,28 @@ Feature: Account inventory — retirement-planning buckets
       Then the inventory has a "taxable_brokerage" bucket
       And the account "Future Fund" in the "taxable_brokerage" bucket is flagged as unknown subtype
 
+  Rule: Accounts with null balance are flagged as balance unknown
+
+    @ISSUE-50
+    Scenario: Unsynced account with null currentBalance is flagged balance_unknown
+      Given the household has the following accounts:
+        | name            | type       | subtype | balance |
+        | Unsynced Saving | depository | savings | null    |
+      When the advisor runs an account inventory
+      Then the inventory has a "cash" bucket
+      And the account "Unsynced Saving" in the "cash" bucket is flagged as balance unknown
+
+  Rule: Accounts with null subtype fall back to the type-level bucket
+
+    @ISSUE-50
+    Scenario: Brokerage account with null subtype falls back to taxable_brokerage bucket
+      Given the household has the following accounts:
+        | name         | type      | subtype | balance   |
+        | Mystery Fund | brokerage | null    | 15000.00  |
+      When the advisor runs an account inventory
+      Then the inventory has a "taxable_brokerage" bucket
+      And the "taxable_brokerage" bucket contains 1 account
+
   Rule: An expired session surfaces a re-authentication prompt
 
     Scenario: Expired session blocks the inventory

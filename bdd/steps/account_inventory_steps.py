@@ -19,19 +19,24 @@ def step_configure_accounts(context):
 
     Subtype may be omitted from the header — defaults to "checking".
     is_hidden column is optional — defaults to False.
+    balance value "null" sends JSON null currentBalance (unsynced account).
+    subtype value "null" sends JSON null subtype (no subtype on the account).
     """
     accounts = []
     has_subtype = "subtype" in context.table.headings
     has_is_hidden = "is_hidden" in context.table.headings
 
     for row in context.table:
+        raw_balance = row["balance"].strip()
+        balance = None if raw_balance.lower() == "null" else float(raw_balance)
         acct: dict = {
             "name": row["name"],
             "type": row["type"],
-            "currentBalance": float(row["balance"]),
+            "currentBalance": balance,
         }
         if has_subtype:
-            acct["subtype"] = row["subtype"] or None
+            raw_subtype = row["subtype"].strip()
+            acct["subtype"] = None if raw_subtype.lower() == "null" else (raw_subtype or None)
         if has_is_hidden:
             acct["is_hidden"] = row["is_hidden"].strip().lower() == "true"
 
@@ -160,6 +165,15 @@ def step_assert_account_unknown_subtype(context, name: str, bucket: str):
     assert account.get("unknown_subtype"), (
         f"Expected account {name!r} in {bucket!r} to have unknown_subtype=true, "
         f"but unknown_subtype={account.get('unknown_subtype')!r}"
+    )
+
+
+@then('the account "{name}" in the "{bucket}" bucket is flagged as balance unknown')
+def step_assert_account_balance_unknown(context, name: str, bucket: str):
+    account = _find_account_in_bucket(context, name, bucket)
+    assert account.get("balance_unknown"), (
+        f"Expected account {name!r} in {bucket!r} to have balance_unknown=true, "
+        f"but balance_unknown={account.get('balance_unknown')!r}"
     )
 
 
