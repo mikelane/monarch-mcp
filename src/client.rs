@@ -99,7 +99,6 @@ impl From<AccountRaw> for Account {
 pub struct Account {
     #[allow(dead_code)]
     pub id: String,
-    #[allow(dead_code)]
     pub display_name: String,
     /// Monarch sends `null` for unsynced or manually-tracked accounts.
     /// A null balance means "balance unknown" — we treat it as 0.0 so one
@@ -1621,8 +1620,16 @@ mod tests {
             "null balance must default to 0.0, got {}",
             unsynced.current_balance
         );
+        assert!(
+            unsynced.balance_was_null,
+            "null currentBalance must set balance_was_null=true so 0.0 is not mistaken for a real zero"
+        );
         let ok = accounts.iter().find(|a| a.id == "acct-ok").unwrap();
         assert!((ok.current_balance - 5000.0).abs() < f64::EPSILON);
+        assert!(
+            !ok.balance_was_null,
+            "a present currentBalance must leave balance_was_null=false"
+        );
     }
 
     // -----------------------------------------------------------------------
