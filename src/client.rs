@@ -1465,7 +1465,7 @@ mod tests {
                             "currentBalance": 120000.0,
                             "isHidden": false,
                             "type": {"name": "investment", "display": "Investment", "__typename": "AccountType"},
-                            "subtype": {"name": "four_oh_one_k", "display": "401k", "__typename": "AccountSubtype"},
+                            "subtype": {"name": "st_401k", "display": "401k", "__typename": "AccountSubtype"},
                             "__typename": "Account"
                         },
                         {
@@ -1491,7 +1491,7 @@ mod tests {
         assert_eq!(k401.display_name, "Fidelity 401k");
         assert_eq!(
             k401.subtype.as_ref().map(|s| s.name.as_str()),
-            Some("four_oh_one_k"),
+            Some("st_401k"),
             "subtype name must be captured"
         );
         assert!(!k401.is_hidden, "is_hidden must be false");
