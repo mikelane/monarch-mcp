@@ -909,7 +909,16 @@ async fn account_inventory_returns_valid_structure() {
         }
     }
 
-    // Rollup invariant: net_worth = total_assets − total_liabilities.
+    // Independent rollup reconciliation: compute expected values from raw signed
+    // account balances and assert the inventory matches. This catches BUG B/C —
+    // a tautological check (net_worth == total_assets − total_liabilities) cannot
+    // detect wrong totals because both sides of the equation are from the same
+    // compute function.
+    let expected_net_worth: f64 = accounts.iter().map(|a| a.current_balance).sum();
+    let expected_total_assets: f64 = accounts.iter().map(|a| a.current_balance.max(0.0)).sum();
+    let expected_total_liabilities: f64 =
+        accounts.iter().map(|a| (-a.current_balance).max(0.0)).sum();
+
     let rollup = &inventory.rollup;
     assert!(
         rollup.total_assets.is_finite(),
@@ -936,14 +945,23 @@ async fn account_inventory_returns_valid_structure() {
         "total_liabilities must be non-negative (absolute value), got {}",
         rollup.total_liabilities
     );
-    let expected_net = rollup.total_assets - rollup.total_liabilities;
     assert!(
-        (rollup.net_worth - expected_net).abs() < 0.01,
-        "net_worth ({:.2}) must equal total_assets ({:.2}) − total_liabilities ({:.2}) = {:.2}",
+        (rollup.net_worth - expected_net_worth).abs() < 0.01,
+        "net_worth ({:.2}) must equal raw signed sum of all account balances ({:.2})",
         rollup.net_worth,
+        expected_net_worth
+    );
+    assert!(
+        (rollup.total_assets - expected_total_assets).abs() < 0.01,
+        "total_assets ({:.2}) must equal sum of positive account balances ({:.2})",
         rollup.total_assets,
+        expected_total_assets
+    );
+    assert!(
+        (rollup.total_liabilities - expected_total_liabilities).abs() < 0.01,
+        "total_liabilities ({:.2}) must equal abs-sum of negative account balances ({:.2})",
         rollup.total_liabilities,
-        expected_net
+        expected_total_liabilities
     );
 
     eprintln!("total_assets:      {:.2}", rollup.total_assets);
