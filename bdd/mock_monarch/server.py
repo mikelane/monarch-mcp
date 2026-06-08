@@ -192,24 +192,45 @@ def _make_account(index: int, acct: dict) -> dict:
     When the fixture sets currentBalance=None, the mock passes null through to
     the client — matching real Monarch behaviour for unsynced/manual accounts.
     The client must handle null gracefully (Bug B2: use serde default=0.0).
+
+    Fixture keys:
+      name             — displayName (default "Account N")
+      type             — type.name (default "depository")
+      subtype          — subtype.name; set to None for null subtype (ADR 0003)
+      subtype_display  — subtype.display (default: title-cased subtype name)
+      currentBalance   — numeric or None for null
+      is_hidden        — isHidden flag (default False)
     """
-    # Use sentinel to distinguish "not set" (default 0.0) from explicit None (null).
     raw_balance = acct.get("currentBalance", 0.0)
+
+    # Subtype: None in fixture → JSON null; omitted → default "checking"
+    subtype_key = "subtype"
+    if subtype_key in acct:
+        subtype_name = acct[subtype_key]
+    else:
+        subtype_name = "checking"
+
+    if subtype_name is None:
+        subtype_obj = None
+    else:
+        subtype_display = acct.get("subtype_display", subtype_name.replace("_", " ").title())
+        subtype_obj = {
+            "name": subtype_name,
+            "display": subtype_display,
+            "__typename": "AccountSubtype",
+        }
+
     return {
         "id": str(acct.get("id", index)),
         "displayName": acct.get("name", f"Account {index}"),
         "currentBalance": raw_balance,  # None serialises as JSON null — intentional
-        "isHidden": False,
+        "isHidden": bool(acct.get("is_hidden", False)),
         "type": {
             "name": acct.get("type", "depository"),
             "display": acct.get("type", "Depository").title(),
             "__typename": "AccountType",
         },
-        "subtype": {
-            "name": "checking",
-            "display": "Checking",
-            "__typename": "AccountSubtype",
-        },
+        "subtype": subtype_obj,
         "__typename": "Account",
     }
 

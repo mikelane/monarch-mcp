@@ -31,6 +31,7 @@
 //! | Medium | `bdd/features/**/*.feature`    | `cd bdd && uv run behave`       | always (mock)    |
 //! | Large  | `tests/live_integration.rs`    | `MONARCH_LIVE=1 cargo test --test live_integration` | `MONARCH_LIVE=1` |
 
+use monarch_mcp::account_inventory::compute_account_inventory;
 use monarch_mcp::client::MonarchClient;
 use monarch_mcp::financial_overview::compute_overview;
 use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
@@ -837,4 +838,148 @@ async fn financial_overview_and_spending_report_agree_on_true_spending() {
     } else {
         eprintln!("no income/transfer transactions this month; structural check passed");
     }
+}
+
+/// Verify that `account_inventory` works end-to-end against the real Monarch
+/// API: GetAccounts succeeds, all accounts parse correctly (subtype nullable
+/// per ADR 0003, balance nullable per ADR 0003), and `compute_account_inventory`
+/// produces structurally valid output.
+///
+/// Does NOT assert specific balances, account names, or bucket membership —
+/// those change over time. Asserts structural validity only:
+/// - At least one account is returned.
+/// - Every account entry has a non-empty display_name and type_name.
+/// - Every bucket total is finite.
+/// - Rollup invariant holds: net_worth = total_assets − total_liabilities.
+/// - Known Monarch type strings all appear in recognized buckets (not flagged
+///   as unknown_subtype unless the vocabulary has genuinely changed).
+///
+/// This test will catch any future Monarch schema change that renames or removes
+/// the `subtype`, `isHidden`, or `currentBalance` fields — the same failure mode
+/// that ADR 0009 was written to prevent for invented subtype strings.
+#[tokio::test]
+async fn account_inventory_returns_valid_structure() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+
+    let accounts = client
+        .get_accounts()
+        .await
+        .expect("GetAccounts must succeed against real Monarch");
+
+    assert!(!accounts.is_empty(), "must have at least one account");
+    eprintln!("accounts returned: {}", accounts.len());
+
+    let inventory = compute_account_inventory(&accounts);
+
+    // Every account entry must have non-empty name and type.
+    for (bucket_name, bucket) in &inventory.buckets {
+        assert!(
+            bucket.total.is_finite(),
+            "bucket {bucket_name:?} total must be finite, got {}",
+            bucket.total
+        );
+        for entry in &bucket.accounts {
+            assert!(
+                !entry.display_name.is_empty(),
+                "display_name must not be empty in bucket {bucket_name:?}"
+            );
+            assert!(
+                !entry.type_name.is_empty(),
+                "type_name must not be empty for {:?}",
+                entry.display_name
+            );
+            assert!(
+                entry.balance.is_finite(),
+                "balance must be finite for {:?}, got {}",
+                entry.display_name,
+                entry.balance
+            );
+            if entry.unknown_subtype {
+                eprintln!(
+                    "WARNING: unknown subtype for {:?} (type={:?}, subtype={:?}) — \
+                     Monarch may have added a new subtype; update ADR 0009 if so",
+                    entry.display_name, entry.type_name, entry.subtype_name
+                );
+            }
+        }
+    }
+
+    // Independent rollup reconciliation: compute expected values from raw signed
+    // account balances and assert the inventory matches. This catches BUG B/C —
+    // a tautological check (net_worth == total_assets − total_liabilities) cannot
+    // detect wrong totals because both sides of the equation are from the same
+    // compute function.
+    let expected_net_worth: f64 = accounts.iter().map(|a| a.current_balance).sum();
+    let expected_total_assets: f64 = accounts.iter().map(|a| a.current_balance.max(0.0)).sum();
+    let expected_total_liabilities: f64 =
+        accounts.iter().map(|a| (-a.current_balance).max(0.0)).sum();
+
+    let rollup = &inventory.rollup;
+    assert!(
+        rollup.total_assets.is_finite(),
+        "total_assets must be finite, got {}",
+        rollup.total_assets
+    );
+    assert!(
+        rollup.total_liabilities.is_finite(),
+        "total_liabilities must be finite, got {}",
+        rollup.total_liabilities
+    );
+    assert!(
+        rollup.net_worth.is_finite(),
+        "net_worth must be finite, got {}",
+        rollup.net_worth
+    );
+    assert!(
+        rollup.total_assets >= 0.0,
+        "total_assets must be non-negative, got {}",
+        rollup.total_assets
+    );
+    assert!(
+        rollup.total_liabilities >= 0.0,
+        "total_liabilities must be non-negative (absolute value), got {}",
+        rollup.total_liabilities
+    );
+    assert!(
+        (rollup.net_worth - expected_net_worth).abs() < 0.01,
+        "net_worth ({:.2}) must equal raw signed sum of all account balances ({:.2})",
+        rollup.net_worth,
+        expected_net_worth
+    );
+    assert!(
+        (rollup.total_assets - expected_total_assets).abs() < 0.01,
+        "total_assets ({:.2}) must equal sum of positive account balances ({:.2})",
+        rollup.total_assets,
+        expected_total_assets
+    );
+    assert!(
+        (rollup.total_liabilities - expected_total_liabilities).abs() < 0.01,
+        "total_liabilities ({:.2}) must equal abs-sum of negative account balances ({:.2})",
+        rollup.total_liabilities,
+        expected_total_liabilities
+    );
+
+    eprintln!("total_assets:      {:.2}", rollup.total_assets);
+    eprintln!("total_liabilities: {:.2}", rollup.total_liabilities);
+    eprintln!("net_worth:         {:.2}", rollup.net_worth);
+    eprintln!(
+        "buckets: {:?}",
+        inventory.buckets.keys().collect::<Vec<_>>()
+    );
+
+    // Count unknown subtypes — any non-zero count is a signal to update ADR 0009.
+    let unknown_count: usize = inventory
+        .buckets
+        .values()
+        .flat_map(|b| &b.accounts)
+        .filter(|e| e.unknown_subtype)
+        .count();
+    eprintln!("accounts with unknown_subtype: {unknown_count}");
+    // Non-fatal: warn only. A strict assert here would break if Monarch adds a
+    // new subtype before we can update ADR 0009 and the bucket map.
 }

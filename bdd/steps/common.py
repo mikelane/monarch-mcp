@@ -43,6 +43,7 @@ def step_assert_reauth_required(context):
         or getattr(context, "forecast_result", None)
         or getattr(context, "trend_result", None)
         or getattr(context, "scan_result", None)
+        or getattr(context, "inventory_result", None)
     )
     assert result is not None, (
         "No tool result found — make sure the When step ran before this Then step."

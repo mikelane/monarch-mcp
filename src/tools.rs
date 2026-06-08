@@ -1,5 +1,6 @@
 //! Tool registry — registers the four compound tool names for `tools/list`.
 
+use crate::account_inventory::compute_account_inventory;
 use crate::cashflow_forecast::compute_forecast;
 use crate::client::MonarchClient;
 use crate::error::MonarchError;
@@ -320,6 +321,39 @@ impl MonarchTools {
 
         let payload = match fetch_and_compute_inspection(&client, params).await {
             Ok(result) => serde_json::to_value(&result)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
+        description = "List all accounts grouped into retirement-planning buckets: \
+        tax_advantaged (401k, Roth IRA, HSA), taxable_brokerage, cash (depository), \
+        other_assets (vehicles), and liabilities (credit cards, loans). \
+        Each account shows its balance, Monarch type/subtype, hidden flag, and whether \
+        its subtype was recognized. Includes a net-worth rollup for cross-checking \
+        against financial_overview."
+    )]
+    async fn account_inventory(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_inventory(&client).await {
+            Ok(inventory) => serde_json::to_value(&inventory)
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?,
             Err(MonarchError::SessionExpired) => {
                 json!({
@@ -674,6 +708,13 @@ async fn fetch_and_compute_forecast(
     Ok(compute_forecast(current_balance, &recurring))
 }
 
+async fn fetch_and_compute_inventory(
+    client: &MonarchClient,
+) -> Result<crate::account_inventory::AccountInventory, MonarchError> {
+    let accounts = client.get_accounts().await?;
+    Ok(compute_account_inventory(&accounts))
+}
+
 async fn fetch_and_compute_trend(
     client: &MonarchClient,
     months: u32,
@@ -764,7 +805,7 @@ impl ServerHandler for MonarchTools {
                 "Monarch Money budgeting advisor. Tools: financial_overview, \
              spending_report, triage_uncategorized, inspect_transactions, \
              apply_changeset, progress_vs_goals, \
-             cashflow_forecast, net_worth_trend, recurring_scan."
+             cashflow_forecast, net_worth_trend, recurring_scan, account_inventory."
                     .to_string(),
             )
     }

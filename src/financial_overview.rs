@@ -83,9 +83,12 @@ mod tests {
             id: "id".to_string(),
             display_name: "Test".to_string(),
             current_balance: balance,
+            balance_was_null: false,
             account_type: AccountType {
                 name: "checking".to_string(),
             },
+            subtype: None,
+            is_hidden: false,
         }
     }
 

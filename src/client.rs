@@ -63,28 +63,76 @@ where
     Ok(opt.unwrap_or(0.0))
 }
 
+/// Raw serde target for a Monarch account — preserves `currentBalance` as
+/// `Option<f64>` so callers can distinguish `null` (unknown) from `0.0` (real zero).
+/// Converted to [`Account`] via `From<AccountRaw>`.
 #[derive(Debug, Deserialize)]
+struct AccountRaw {
+    pub id: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    /// `None` when Monarch sent JSON `null` (unsynced/manual account).
+    #[serde(rename = "currentBalance")]
+    pub current_balance: Option<f64>,
+    #[serde(rename = "type")]
+    pub account_type: AccountType,
+    pub subtype: Option<AccountSubtype>,
+    #[serde(rename = "isHidden")]
+    pub is_hidden: bool,
+}
+
+impl From<AccountRaw> for Account {
+    fn from(raw: AccountRaw) -> Self {
+        Account {
+            id: raw.id,
+            display_name: raw.display_name,
+            balance_was_null: raw.current_balance.is_none(),
+            current_balance: raw.current_balance.unwrap_or(0.0),
+            account_type: raw.account_type,
+            subtype: raw.subtype,
+            is_hidden: raw.is_hidden,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Account {
     #[allow(dead_code)]
     pub id: String,
-    #[serde(rename = "displayName")]
-    #[allow(dead_code)]
     pub display_name: String,
     /// Monarch sends `null` for unsynced or manually-tracked accounts.
     /// A null balance means "balance unknown" — we treat it as 0.0 so one
     /// unsynced account never fails the entire accounts parse.
-    #[serde(
-        rename = "currentBalance",
-        deserialize_with = "deserialize_null_f64_as_zero"
-    )]
     pub current_balance: f64,
-    #[serde(rename = "type")]
+    /// `true` when Monarch returned `null` for `currentBalance`.
+    /// The `current_balance` field is 0.0 in that case — a placeholder, not
+    /// a real zero balance. Downstream consumers (e.g. `account_inventory`)
+    /// use this flag to surface `balance_unknown` so stale accounts do not
+    /// masquerade as real $0 balances.
+    pub balance_was_null: bool,
     pub account_type: AccountType,
+    /// Monarch subtype — nullable per ADR 0003. `None` when Monarch returns
+    /// `null` (e.g. some manually-tracked accounts have no subtype).
+    pub subtype: Option<AccountSubtype>,
+    /// Whether the account is hidden in the Monarch UI.
+    pub is_hidden: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AccountType {
     pub name: String,
+}
+
+/// Account subtype from Monarch's `subtype { name display }` field.
+///
+/// Nullable per ADR 0003 — some account types (e.g. manually-tracked
+/// real estate) have no subtype. Always use `Option<AccountSubtype>`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AccountSubtype {
+    pub name: String,
+    /// Human-readable label from Monarch (e.g. "401k", "Roth IRA").
+    /// Surfaced in `account_inventory` output for display purposes.
+    pub display: String,
 }
 
 /// A transaction as consumed by spending_report.rs and triage.rs.
@@ -603,9 +651,9 @@ impl MonarchClient {
                 json!({}),
             )
             .await?;
-        let accounts: Vec<Account> = serde_json::from_value(data["accounts"].clone())
+        let raw: Vec<AccountRaw> = serde_json::from_value(data["accounts"].clone())
             .map_err(|e| MonarchError::Internal(format!("parse accounts: {e}")))?;
-        Ok(accounts)
+        Ok(raw.into_iter().map(Account::from).collect())
     }
 
     /// Fetch transactions for a date range.
@@ -1399,6 +1447,60 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // GetAccounts: subtype and is_hidden are captured (issue #50)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_accounts_captures_subtype_and_is_hidden() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "accounts": [
+                        {
+                            "id": "acct-401k",
+                            "displayName": "Fidelity 401k",
+                            "currentBalance": 120000.0,
+                            "isHidden": false,
+                            "type": {"name": "investment", "display": "Investment", "__typename": "AccountType"},
+                            "subtype": {"name": "st_401k", "display": "401k", "__typename": "AccountSubtype"},
+                            "__typename": "Account"
+                        },
+                        {
+                            "id": "acct-hidden",
+                            "displayName": "Old Savings",
+                            "currentBalance": 0.0,
+                            "isHidden": true,
+                            "type": {"name": "depository", "display": "Depository", "__typename": "AccountType"},
+                            "subtype": null,
+                            "__typename": "Account"
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let accounts = client.get_accounts().await.unwrap();
+        assert_eq!(accounts.len(), 2);
+
+        let k401 = &accounts[0];
+        assert_eq!(k401.display_name, "Fidelity 401k");
+        assert_eq!(
+            k401.subtype.as_ref().map(|s| s.name.as_str()),
+            Some("st_401k"),
+            "subtype name must be captured"
+        );
+        assert!(!k401.is_hidden, "is_hidden must be false");
+
+        let hidden = &accounts[1];
+        assert!(hidden.subtype.is_none(), "null subtype must parse as None");
+        assert!(hidden.is_hidden, "is_hidden must be true");
+    }
+
+    // -----------------------------------------------------------------------
     // GetAccounts: real Monarch response shape
     // -----------------------------------------------------------------------
 
@@ -1518,8 +1620,16 @@ mod tests {
             "null balance must default to 0.0, got {}",
             unsynced.current_balance
         );
+        assert!(
+            unsynced.balance_was_null,
+            "null currentBalance must set balance_was_null=true so 0.0 is not mistaken for a real zero"
+        );
         let ok = accounts.iter().find(|a| a.id == "acct-ok").unwrap();
         assert!((ok.current_balance - 5000.0).abs() < f64::EPSILON);
+        assert!(
+            !ok.balance_was_null,
+            "a present currentBalance must leave balance_was_null=false"
+        );
     }
 
     // -----------------------------------------------------------------------
