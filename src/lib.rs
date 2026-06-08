@@ -4,6 +4,7 @@
 //! re-exports them so `tests/live_integration.rs` can import them without
 //! duplicating the module graph.
 
+pub mod account_inventory;
 pub mod cashflow_forecast;
 pub mod client;
 pub mod error;
