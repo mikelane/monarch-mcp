@@ -121,7 +121,7 @@ pub fn compute_account_inventory(accounts: &[Account]) -> AccountInventory {
         bucket.accounts.push(entry);
     }
 
-    let rollup = compute_rollup(&buckets);
+    let rollup = compute_rollup(accounts);
 
     AccountInventory { buckets, rollup }
 }
@@ -193,22 +193,22 @@ fn build_entry(account: &Account, unknown_subtype: bool) -> AccountEntry {
     }
 }
 
-/// Compute the asset/liability rollup from the populated buckets.
-fn compute_rollup(buckets: &HashMap<String, Bucket>) -> Rollup {
-    let liability_total = buckets
-        .get(BUCKET_LIABILITIES)
-        .map(|b| b.total)
-        .unwrap_or(0.0);
-    let total_liabilities = liability_total.abs();
-
-    let total_assets: f64 = buckets
-        .iter()
-        .filter(|(name, _)| *name != BUCKET_LIABILITIES)
-        .map(|(_, b)| b.total)
-        .sum();
-
+/// Compute the asset/liability rollup from signed account balances.
+///
+/// Each account's balance is classified by sign, not by bucket membership:
+/// - `total_assets`      = Σ max(balance, 0) across all accounts
+/// - `total_liabilities` = Σ max(-balance, 0) across all accounts
+/// - `net_worth`         = total_assets − total_liabilities
+///
+/// This correctly handles edge cases:
+/// - An overpaid credit card (positive balance) counts as an asset.
+/// - An overdrawn checking account (negative balance) counts as a liability.
+///
+/// The identity `net_worth == total_assets − total_liabilities` holds by construction.
+fn compute_rollup(accounts: &[Account]) -> Rollup {
+    let total_assets: f64 = accounts.iter().map(|a| a.current_balance.max(0.0)).sum();
+    let total_liabilities: f64 = accounts.iter().map(|a| (-a.current_balance).max(0.0)).sum();
     let net_worth = total_assets - total_liabilities;
-
     Rollup {
         total_assets,
         total_liabilities,
@@ -439,6 +439,60 @@ mod tests {
         assert!(
             inv.buckets[BUCKET_LIABILITIES].accounts[0].unknown_subtype,
             "unknown type must be flagged"
+        );
+    }
+
+    // Regression: overpaid credit card (positive liability balance) is an asset,
+    // not a liability. net_worth must equal the true signed sum.
+    #[test]
+    fn overpaid_credit_card_counts_as_asset_in_rollup() {
+        let accounts = vec![
+            account("depository", Some("checking"), 10_000.0, false),
+            account("credit", Some("credit_card"), 500.0, false), // overpaid → positive
+        ];
+        let inv = compute_account_inventory(&accounts);
+        let true_net_worth: f64 = accounts.iter().map(|a| a.current_balance).sum();
+        assert!(
+            (inv.rollup.net_worth - true_net_worth).abs() < 0.01,
+            "net_worth ({}) must equal signed sum of all balances ({})",
+            inv.rollup.net_worth,
+            true_net_worth
+        );
+        assert!(
+            (inv.rollup.total_assets - 10_500.0).abs() < 0.01,
+            "overpaid credit card must count toward total_assets, got {}",
+            inv.rollup.total_assets
+        );
+        assert!(
+            (inv.rollup.total_liabilities - 0.0).abs() < 0.01,
+            "no negative balances means zero total_liabilities, got {}",
+            inv.rollup.total_liabilities
+        );
+    }
+
+    // Regression: overdrawn checking account (negative asset balance) must count
+    // toward liabilities, not corrupt total_assets with a negative value.
+    #[test]
+    fn overdrawn_checking_counts_as_liability_in_rollup() {
+        let accounts = vec![
+            account("depository", Some("checking"), -200.0, false), // overdrawn
+            account("brokerage", Some("roth"), 100_000.0, false),
+        ];
+        let inv = compute_account_inventory(&accounts);
+        assert!(
+            (inv.rollup.total_assets - 100_000.0).abs() < 0.01,
+            "total_assets must be sum of positive balances only (100000), got {}",
+            inv.rollup.total_assets
+        );
+        assert!(
+            (inv.rollup.total_liabilities - 200.0).abs() < 0.01,
+            "overdrawn checking must contribute to total_liabilities, got {}",
+            inv.rollup.total_liabilities
+        );
+        assert!(
+            (inv.rollup.net_worth - 99_800.0).abs() < 0.01,
+            "net_worth must be 99800, got {}",
+            inv.rollup.net_worth
         );
     }
 
