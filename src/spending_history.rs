@@ -58,12 +58,21 @@ fn category_tokens(name: &str) -> Vec<String> {
 }
 
 /// Returns `true` when a category name contains a fixed-spending pattern as a
-/// complete word token (whole-word match, case-insensitive).
+/// complete word token (whole-word match, case-insensitive), tolerating simple
+/// English plural forms.
 ///
 /// Splits both the category name and each pattern on non-alphanumeric characters
 /// and checks that the pattern's token sequence appears as a contiguous subsequence
-/// of the category's tokens. This prevents false positives like "Concert Rentals"
-/// matching `"rent"` or "Accidental Purchases" matching `"dental"`.
+/// of the category's tokens. A category token matches a pattern token when they
+/// are equal OR when the category token is the pattern token + "s" (simple plural).
+///
+/// This prevents false positives like "Concert Rentals" matching `"rent"` —
+/// "rentals" stripped of trailing "s" gives "rental", which is NOT equal to "rent",
+/// so the match still fails. Meanwhile "Student Loans" correctly matches `"loan"`
+/// because "loans" stripped of trailing "s" gives "loan".
+///
+/// "Accidental Purchases" does NOT match `"dental"` — "accidental" is a whole
+/// token, not a plural of "dental".
 pub fn is_fixed_category(category_name: &str) -> bool {
     let name_tokens = category_tokens(category_name);
     FIXED_CATEGORY_PATTERNS.iter().any(|pattern| {
@@ -71,10 +80,17 @@ pub fn is_fixed_category(category_name: &str) -> bool {
         if pattern_tokens.is_empty() {
             return false;
         }
-        // Slide over name_tokens looking for the full pattern token sequence
-        name_tokens
-            .windows(pattern_tokens.len())
-            .any(|window| window == pattern_tokens.as_slice())
+        // Slide over name_tokens looking for the full pattern token sequence.
+        // Each name token matches its corresponding pattern token if they are
+        // identical or if the name token is the simple plural (pattern + "s").
+        name_tokens.windows(pattern_tokens.len()).any(|window| {
+            window
+                .iter()
+                .zip(pattern_tokens.iter())
+                .all(|(name_tok, pat_tok)| {
+                    name_tok == pat_tok || *name_tok == format!("{pat_tok}s")
+                })
+        })
     })
 }
 
@@ -883,6 +899,30 @@ mod tests {
         assert!(!is_fixed_category("Accidental Purchases"));
         // "insurance" is a substring of "Reinsurance" but not a whole word
         assert!(!is_fixed_category("Reinsurance Hobby"));
+    }
+
+    #[test]
+    fn is_fixed_category_plural_forms_of_fixed_categories_are_fixed() {
+        // Default Monarch category "Student Loans" — plural of "loan"
+        assert!(is_fixed_category("Student Loans"));
+        // Bare plural "Loans"
+        assert!(is_fixed_category("Loans"));
+        // Plural "Insurances" (user rename)
+        assert!(is_fixed_category("Insurances"));
+        // Plural "Mortgages"
+        assert!(is_fixed_category("Mortgages"));
+    }
+
+    #[test]
+    fn is_fixed_category_plural_rule_does_not_break_run1_discretionary_cases() {
+        // "rentals" singularizes to "rental", which != "rent" — stays DISCRETIONARY
+        assert!(!is_fixed_category("Concert Rentals"));
+        // Regression guards for all run #1 false-positive cases
+        assert!(!is_fixed_category("Accidental Purchases"));
+        assert!(!is_fixed_category("Reinsurance Hobby"));
+        assert!(!is_fixed_category("Apparent Overspending"));
+        assert!(!is_fixed_category("Current Subscriptions"));
+        assert!(!is_fixed_category("Parent Gifts"));
     }
 
     #[test]
