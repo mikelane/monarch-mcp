@@ -554,6 +554,33 @@ def _handle_get_household_transaction_tags(body: dict) -> dict:
     }
 
 
+def _resolve_category_name(category_id: str, fixtures: dict) -> str:
+    """Return the human-readable category name for a given UUID.
+
+    Looks up the name from whichever source ``_handle_get_categories`` would use
+    (categories_override when set, otherwise budgets then transactions).  Falls
+    back to the raw id string so callers always get a non-empty value.
+    """
+    override = fixtures.get("categories_override")
+    if override is not None:
+        for c in override:
+            if c.get("id") == category_id:
+                return c["name"]
+        return category_id
+
+    # Derive from budgets (same ordering as _handle_get_categories)
+    for i, b in enumerate(fixtures.get("budgets", [])):
+        if f"cat-budget-{i}" == category_id:
+            return b.get("category", category_id)
+
+    # Derive from transactions
+    for i, t in enumerate(fixtures.get("transactions", [])):
+        if f"cat-txn-{i}" == category_id:
+            return t.get("category", category_id)
+
+    return category_id
+
+
 def _handle_common_update_transaction(body: dict) -> dict:
     """Common_UpdateTransactionMutation — record the change, reject amount mutations.
 
@@ -571,8 +598,14 @@ def _handle_common_update_transaction(body: dict) -> dict:
     change_record: dict[str, Any] = {"id": txn_id}
     if category_id is not None:
         change_record["categoryId"] = category_id
-        # Also store as "category" for BDD assertions that check c.get("category")
-        change_record["category"] = category_id
+        # Resolve the UUID back to a human-readable name for BDD Then-step
+        # assertions (e.g. `c.get("category") == "Coffee"`). The Rust client
+        # now correctly resolves names → UUIDs before calling the mutation, so
+        # the mutation receives a UUID. Storing the name here keeps assertions
+        # readable without weakening them.
+        fixtures = get_fixtures()
+        category_name = _resolve_category_name(category_id, fixtures)
+        change_record["category"] = category_name
     if tag_ids is not None:
         change_record["tagIds"] = tag_ids
     if notes is not None:

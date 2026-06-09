@@ -89,6 +89,16 @@ def step_proposed_change(context, merchant: str, category: str):
             "transactions": uncategorized,
         },
     )
+    # Register the target category in the mock catalog so the Rust client's
+    # name→UUID resolution succeeds. In real Monarch the target category would
+    # already exist in the household's category list — the pre-fix code skipped
+    # this resolution entirely (the bug), so the old setup never needed it.
+    # A budget entry is the lightest seed: it registers the category without
+    # adding spurious transactions that would corrupt count assertions.
+    requests.post(
+        f"{context.mock_base}/configure",
+        json={"budgets": [{"category": category, "amount": -50.0}]},
+    )
     # Use the transaction id in the changeset — the apply_changeset tool
     # requires an explicit id; merchant-based lookup was removed when
     # ChangeEntry adopted deny_unknown_fields (see triage.rs).
@@ -105,6 +115,14 @@ def step_proposed_change_one_transaction(context, category: str):
     else:
         txn_id = "0"
         merchant = "Merchant 0"
+    # Register the target category in the mock catalog so the Rust client's
+    # name→UUID resolution succeeds. A budget entry is the lightest seed:
+    # it registers the category without adding spurious transactions that
+    # would corrupt the 40-transaction count assertion in the sibling Then step.
+    requests.post(
+        f"{context.mock_base}/configure",
+        json={"budgets": [{"category": category, "amount": -50.0}]},
+    )
     context._proposed_changeset = [
         {"merchant": merchant, "category": category, "id": txn_id}
     ]

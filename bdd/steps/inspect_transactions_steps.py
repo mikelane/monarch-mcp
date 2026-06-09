@@ -116,6 +116,15 @@ def step_pets_transaction_with_id(context, txn_id: str):
     ]
     context._inspect_txn_id = txn_id
     requests.post(f"{context.mock_base}/configure", json={"transactions": txns})
+    # Register "Veterinary" in the mock catalog so the Rust client's name→UUID
+    # resolution succeeds when the scenario recategorizes the transaction as
+    # "Veterinary". In real Monarch, "Veterinary" would already exist as a
+    # household category. The pre-fix code bypassed resolution entirely (the
+    # bug), so the old setup never needed this seed.
+    requests.post(
+        f"{context.mock_base}/configure",
+        json={"budgets": [{"category": "Veterinary", "amount": -200.0}]},
+    )
 
 
 # ---------------------------------------------------------------------------
