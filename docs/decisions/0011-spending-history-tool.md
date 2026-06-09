@@ -43,14 +43,23 @@ month-to-month:
 
 **DISCRETIONARY** — all other expense categories.
 
-The taxonomy is implemented as `FIXED_CATEGORY_PATTERNS: &[&str]` — a substring match against
-the lowercased category name. Broad patterns (e.g. `"loan"` matches both "Auto Loan" and
-"Loan Repayment") reduce the risk of missed categorisation when users rename Monarch categories.
-The constant is documented and testable; future maintainers can extend it without changing logic.
+The taxonomy is implemented as `FIXED_CATEGORY_PATTERNS: &[&str]` — matched against the
+category name using **whole-word (token-boundary) matching**, not substring matching.
+The category name is split on non-alphanumeric characters (spaces, `/`, `-`, `&`, etc.)
+into lowercase tokens, and a pattern matches only when its own tokens appear as a contiguous
+sequence in the category's token list. This prevents false positives: "Concert Rentals"
+does NOT match `"rent"` (only the token "rentals" is present), and "Accidental Purchases"
+does NOT match `"dental"`.
 
-**Rationale for substring matching over exact enumeration:** Monarch category names are
-user-customisable. An exact list would be brittle and expensive to maintain. Broad substrings
-cover the common variants while still being auditable in a single constant.
+Patterns like `"loan"` still match both "Auto Loan" and "Loan Repayment" because "loan"
+appears as a whole token in each. Multi-word patterns (if ever needed) match as a token
+sequence. The constant is documented and testable; future maintainers can extend it without
+changing logic.
+
+**Rationale for whole-word matching over exact enumeration:** Monarch category names are
+user-customisable. An exact list would be brittle and expensive to maintain. Whole-word
+token matching covers the common variants (e.g. "Home Mortgage", "Car Loan") while
+avoiding false positives from coincidental substring containment.
 
 ### (c) Compact aggregate-only output contract
 
@@ -84,10 +93,12 @@ mental model of "last 6 months" and avoids partial-month distortion.
 - A new `spending_history` tool appears in the MCP tool list.
 - Both `spending_report` and `spending_history` are guaranteed to agree on exclusion rules
   because they call the same underlying function.
-- The fixed/discretionary taxonomy is conservative. Categories that happen to contain
-  "rent" or "loan" in a discretionary context (e.g. "Camera Rental") will be incorrectly
-  classified as fixed. This is an acceptable false-positive rate given how rarely such
-  categories appear — the advisor can note anomalies in its commentary.
+- The fixed/discretionary taxonomy uses whole-word token matching. A category like
+  "Camera Rental" does NOT match `"rent"` because "rental" is not the same token as
+  "rent". Categories whose name IS the bare word "Rent" or contains "Rent" as a whole
+  token (e.g. "Rent Payment") correctly classify as fixed. The `months` parameter is
+  clamped to a minimum of 1 inside `range_for_months_count` to prevent u32 underflow
+  when callers pass 0.
 
 ## Alternatives Considered
 

@@ -21,18 +21,22 @@ use std::collections::HashMap;
 // Fixed-category taxonomy (ADR 0011)
 // ---------------------------------------------------------------------------
 
-/// Lowercase substring patterns that identify FIXED spending categories.
+/// Whole-word token patterns that identify FIXED spending categories.
 ///
-/// A category is FIXED when its name (lowercased) contains any of these
-/// strings. Everything else is DISCRETIONARY. Patterns are intentionally
-/// broad so that user-renamed variants (e.g. "Home Mortgage", "Car Loan")
-/// still match without requiring an exhaustive enumeration.
+/// A category is FIXED when its name contains any of these patterns as a
+/// complete word (case-insensitive). Tokenization splits on any non-alphanumeric
+/// character (spaces, `&`, `/`, `-`, etc.) so that "Concert Rentals" does NOT
+/// match `"rent"` (only the token "Rentals" is present, not the whole word
+/// "rent"), but "Rent" and "Rental Income" with a bare "Rent" token do match.
+///
+/// Multi-word patterns (sequences of tokens) are matched by sliding over the
+/// token list looking for the full sequence in order.
 ///
 /// Taxonomy rationale (ADR 0011):
 /// - `"mortgage"` / `"rent"` — housing costs, non-negotiable monthly obligations
 /// - `"insurance"` — health, auto, home, life; fixed premium obligations
-/// - `"utilities"` — electricity, gas, water, internet; relatively stable bills
-/// - `"loan"` / `"auto loan"` — debt service payments on a fixed schedule
+/// - `"utilities"` / `"utility"` — electricity, gas, water, internet; relatively stable bills
+/// - `"loan"` — debt service payments on a fixed schedule
 /// - `"medical"` / `"dental"` — recurring healthcare premiums and copay plans
 pub const FIXED_CATEGORY_PATTERNS: &[&str] = &[
     "mortgage",
@@ -45,12 +49,33 @@ pub const FIXED_CATEGORY_PATTERNS: &[&str] = &[
     "dental",
 ];
 
-/// Returns `true` when a category name matches a fixed-spending pattern.
+/// Tokenize a category name into lowercase words split on non-alphanumeric characters.
+fn category_tokens(name: &str) -> Vec<String> {
+    name.split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase())
+        .collect()
+}
+
+/// Returns `true` when a category name contains a fixed-spending pattern as a
+/// complete word token (whole-word match, case-insensitive).
+///
+/// Splits both the category name and each pattern on non-alphanumeric characters
+/// and checks that the pattern's token sequence appears as a contiguous subsequence
+/// of the category's tokens. This prevents false positives like "Concert Rentals"
+/// matching `"rent"` or "Accidental Purchases" matching `"dental"`.
 pub fn is_fixed_category(category_name: &str) -> bool {
-    let lower = category_name.to_lowercase();
-    FIXED_CATEGORY_PATTERNS
-        .iter()
-        .any(|pattern| lower.contains(pattern))
+    let name_tokens = category_tokens(category_name);
+    FIXED_CATEGORY_PATTERNS.iter().any(|pattern| {
+        let pattern_tokens = category_tokens(pattern);
+        if pattern_tokens.is_empty() {
+            return false;
+        }
+        // Slide over name_tokens looking for the full pattern token sequence
+        name_tokens
+            .windows(pattern_tokens.len())
+            .any(|window| window == pattern_tokens.as_slice())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -204,8 +229,11 @@ fn subtract_months(year: i64, month: u32, n: u32) -> (i64, u32) {
 /// just before the month containing `today_epoch_day`.
 ///
 /// "Complete months" = exclude the current partial month.
+/// `months` is clamped to a minimum of 1 so that zero (or any underflowing
+/// value) never causes a u32 subtraction underflow inside the loop.
 /// Returns `(start_date, end_date)` as ISO-8601 strings.
 pub fn range_for_months_count(today_day: i64, months: u32) -> (String, String) {
+    let months = months.max(1);
     let (today_year, today_month, _) = epoch_days_to_ymd(today_day);
 
     // Prior month is the most recent complete month
@@ -835,6 +863,29 @@ mod tests {
         assert!(is_fixed_category("MORTGAGE"));
         assert!(is_fixed_category("auto insurance"));
         assert!(is_fixed_category("UTILITIES"));
+    }
+
+    #[test]
+    fn is_fixed_category_rejects_substring_false_positives() {
+        // "rent" is a substring of these but not a whole word
+        assert!(!is_fixed_category("Concert Rentals"));
+        assert!(!is_fixed_category("Apparent Overspending"));
+        assert!(!is_fixed_category("Current Subscriptions"));
+        assert!(!is_fixed_category("Parent Gifts"));
+        // "dental" is a substring of "Accidental" but not a whole word
+        assert!(!is_fixed_category("Accidental Purchases"));
+        // "insurance" is a substring of "Reinsurance" but not a whole word
+        assert!(!is_fixed_category("Reinsurance Hobby"));
+    }
+
+    #[test]
+    fn range_for_months_count_zero_clamps_to_one_month() {
+        let today = parse_iso_to_epoch_day("2026-05-15").unwrap();
+        // months=0 must not panic; it clamps to 1, returning the prior month
+        let (start, end) = range_for_months_count(today, 0);
+        assert_eq!(start, "2026-04-01");
+        assert_eq!(end, "2026-04-30");
+        assert!(start <= end);
     }
 
     // -----------------------------------------------------------------------
