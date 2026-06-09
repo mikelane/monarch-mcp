@@ -5,7 +5,7 @@
 //! lives here, separated from I/O, so it can be unit-tested without a mock
 //! server. The tool handler in `tools.rs` fetches data and delegates here.
 //!
-//! ## Fixed vs. discretionary taxonomy (ADR 0010)
+//! ## Fixed vs. discretionary taxonomy (ADR 0011)
 //!
 //! FIXED categories represent non-negotiable recurring obligations:
 //! mortgage/rent, insurance, utilities, auto/loan payments, and recurring
@@ -18,7 +18,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
-// Fixed-category taxonomy (ADR 0010)
+// Fixed-category taxonomy (ADR 0011)
 // ---------------------------------------------------------------------------
 
 /// Lowercase substring patterns that identify FIXED spending categories.
@@ -28,7 +28,7 @@ use std::collections::HashMap;
 /// broad so that user-renamed variants (e.g. "Home Mortgage", "Car Loan")
 /// still match without requiring an exhaustive enumeration.
 ///
-/// Taxonomy rationale (ADR 0010):
+/// Taxonomy rationale (ADR 0011):
 /// - `"mortgage"` / `"rent"` — housing costs, non-negotiable monthly obligations
 /// - `"insurance"` — health, auto, home, life; fixed premium obligations
 /// - `"utilities"` — electricity, gas, water, internet; relatively stable bills
@@ -226,7 +226,7 @@ pub fn range_for_months_count(today_day: i64, months: u32) -> (String, String) {
 /// A transaction whose magnitude is at least this many times the category's
 /// average-per-transaction spend is surfaced as an outlier.
 ///
-/// Rationale (ADR 0010): a factor of 3× above the per-transaction average
+/// Rationale (ADR 0011): a factor of 3× above the per-transaction average
 /// is a pragmatic threshold that catches genuine one-off spikes (e.g. an
 /// annual insurance premium, a large medical bill) while avoiding false
 /// positives on normal month-to-month variation. It is applied per-category

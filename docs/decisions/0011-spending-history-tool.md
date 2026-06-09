@@ -1,4 +1,4 @@
-# ADR 0010 — spending_history tool: multi-month baseline, fixed/discretionary taxonomy, compact output
+# ADR 0011 — spending_history tool: multi-month baseline, fixed/discretionary taxonomy, compact output
 
 **Status:** Accepted
 **Date:** 2026-06-08
