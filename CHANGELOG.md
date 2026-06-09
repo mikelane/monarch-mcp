@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/mikelane/monarch-mcp/compare/v0.3.0...v0.4.0) - 2026-06-09
+
+### Added
+
+- add spending_history tool for multi-month true-spending baseline ([#56](https://github.com/mikelane/monarch-mcp/pull/56))
+- add account_inventory tool for per-account planning buckets ([#51](https://github.com/mikelane/monarch-mcp/pull/51))
+
+### Documentation
+
+- add post-mortem from first live budgeting session ([#45](https://github.com/mikelane/monarch-mcp/pull/45))
+
+### Fixed
+
+- resolve category names to UUIDs before apply_changeset mutation ([#55](https://github.com/mikelane/monarch-mcp/pull/55))
+- cap transaction limit at i32::MAX to avoid GraphQL Int32 overflow ([#48](https://github.com/mikelane/monarch-mcp/pull/48))
+
 ### Added
 
 - add account_inventory tool — groups all accounts into retirement-planning buckets (tax-advantaged, taxable brokerage, cash, other assets, liabilities) with per-bucket totals and a net-worth rollup ([#50](https://github.com/mikelane/monarch-mcp/issues/50))
