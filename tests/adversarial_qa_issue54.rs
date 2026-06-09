@@ -287,24 +287,18 @@ fn whole_word_matcher_keeps_run1_false_positives_discretionary() {
 }
 
 // ---------------------------------------------------------------------------
-// SUSPICIOUS (RUN #2, regression introduced by the whole-word fix):
-// PLURAL forms of fixed-category names are now MISSED (false negatives).
+// REGRESSION GUARD (was RUN #2 finding, FIXED at 59ddc32):
+// PLURAL forms of fixed-category names must classify FIXED.
 //
-// The old substring matcher classified "Student Loans" as FIXED because
-// "loan" is a substring of "loans". The new whole-word matcher tokenizes to
-// ["student","loans"] and "loans" != "loan", so a genuine fixed obligation
-// (student-loan payment) now lands in the DISCRETIONARY bucket. The same holds
-// for any user-renamed plural: "Loans", "Insurances", "Mortgages", "Rentals".
-//
-// This is the inverse trade-off of the run #1 fix: eliminating false positives
-// reintroduced false negatives on plural/derived forms. It is reachable
-// (Monarch ships a default "Student Loans" category and allows arbitrary
-// renames) but is a TAXONOMY-COMPLETENESS edge, not a panic or a broken
-// invariant — the fixed+discretionary==total sum still holds; only the label
-// is wrong. Marked #[ignore] so it does not break the green suite. The team
-// should decide whether to stem/normalise plurals or accept the limitation.
-//
-// Run with: cargo test --test adversarial_qa_issue54 -- --ignored
+// The run #2 whole-word matcher MISSED plurals ("Student Loans" -> ["student",
+// "loans"], "loans" != "loan"), bucketing a genuine fixed obligation as
+// discretionary. The run #3 fix matches a category token against a pattern
+// token when they are equal OR when the category token is the pattern + "s"
+// (simple plural), still on whole tokens. These tests now PASS and pin the
+// plural direction so it cannot regress. The companion CLEAN proof
+// `whole_word_matcher_keeps_run1_false_positives_discretionary` pins the OTHER
+// direction (run #1 false positives stay discretionary) so the +"s" rule
+// cannot re-open the substring hole.
 // ---------------------------------------------------------------------------
 #[test]
 fn plural_fixed_category_names_misclassified_as_discretionary() {
@@ -327,11 +321,39 @@ fn plural_fixed_category_leaks_into_discretionary_bucket() {
     ];
     let history = compute_spending_history(&txns, "2026-03-01", "2026-03-31");
     let m = &history.months[0];
-    // The $450 student-loan payment is a FIXED obligation but is wrongly
-    // bucketed into discretionary by the whole-word matcher.
+    // The $450 student-loan payment is a FIXED obligation; the run #3 plural
+    // rule classifies it correctly.
     assert_eq!(
         m.split.fixed, 450.0,
         "student-loan payment should be FIXED; got fixed={} discretionary={}",
         m.split.fixed, m.split.discretionary
     );
+}
+
+// ---------------------------------------------------------------------------
+// CLEAN (defensive proof, RUN #3): the +"s" plural rule is EXACT-TOKEN, not a
+// suffix match. The exact tension introduced by the run #2 fix is that adding
+// a plural rule could re-open a false-positive hole. It does not: a category
+// whose token merely ENDS in a plural-looking suffix (but is not literally
+// pattern + "s") stays discretionary. "Restaurants" is not "rent"+"s";
+// "Currants" is not "rent"+"s"; "Torrents" is not "rent"+"s". Only whole-token
+// equality to pattern or pattern+"s" matches.
+// ---------------------------------------------------------------------------
+#[test]
+fn plural_rule_does_not_flip_lookalike_discretionary_categories() {
+    for c in [
+        "Restaurants",        // ends in -ants, not rent+s
+        "Currants",           // ends in -rants
+        "Torrents",           // contains 'rent' substring but token != rent(+s)
+        "Tenant Documents",   // tenant/documents — no fixed token
+        "Parent Gifts",       // run #1 false positive
+        "Apartment Supplies", // 'apartment' != rent(+s)
+        "Garments",           // ends in -ments
+    ] {
+        assert!(
+            !is_fixed_category(c),
+            "{c:?} must STAY discretionary — the +\"s\" rule is exact-token, \
+             not a suffix match"
+        );
+    }
 }
