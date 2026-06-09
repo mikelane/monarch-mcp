@@ -1035,9 +1035,11 @@ async fn apply_changeset_resolves_category_name_to_uuid_and_persists() {
     let original_cat = categories
         .iter()
         .find(|c| c.name == original_category_name)
-        .unwrap_or_else(|| panic!(
-            "original category {original_category_name:?} not found in GetCategories response"
-        ));
+        .unwrap_or_else(|| {
+            panic!(
+                "original category {original_category_name:?} not found in GetCategories response"
+            )
+        });
     let original_uuid = original_cat.id.clone();
     eprintln!("original category UUID: {original_uuid}");
 
@@ -1096,7 +1098,10 @@ async fn apply_changeset_resolves_category_name_to_uuid_and_persists() {
          got {:?}",
         updated_txn.category.name
     );
-    eprintln!("recategorization persisted: {} → {target_name:?}", original_category_name);
+    eprintln!(
+        "recategorization persisted: {} → {target_name:?}",
+        original_category_name
+    );
 
     // 5. Revert to original category UUID (leave live data clean).
     client
