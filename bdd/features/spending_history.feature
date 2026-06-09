@@ -56,6 +56,19 @@ Feature: Spending history
       And the month 2026-03 discretionary spending is 300 dollars
       And the month 2026-03 total spending equals fixed plus discretionary
 
+    Scenario: A discretionary category whose name contains a fixed substring stays discretionary
+      # "Concert Rentals" contains the substring "rent"; "Accidental Purchases"
+      # contains "dental". Whole-word tokenization (ADR 0011) must NOT misclassify
+      # either as a fixed obligation. This pins the substring-false-positive fix at
+      # the MCP boundary, not just in the pure Rust predicate.
+      Given the household spent 300 dollars on Concert Rentals in 2026-03
+      And the household spent 120 dollars on Accidental Purchases in 2026-03
+      And the household spent 2500 dollars on Mortgage in 2026-03
+      When the advisor generates spending history for 2026-03-01 to 2026-03-31
+      Then the month 2026-03 fixed spending is 2500 dollars
+      And the month 2026-03 discretionary spending is 420 dollars
+      And the month 2026-03 total spending equals fixed plus discretionary
+
   Rule: The output is compact aggregates — no raw transaction list
 
     Scenario: The response contains per-month aggregates, not individual transactions
