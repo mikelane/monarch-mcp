@@ -99,6 +99,11 @@ mental model of "last 6 months" and avoids partial-month distortion.
   token (e.g. "Rent Payment") correctly classify as fixed. The `months` parameter is
   clamped to a minimum of 1 inside `range_for_months_count` to prevent u32 underflow
   when callers pass 0.
+- Explicit `start_date`/`end_date` inputs are validated via `resolve_history_range`
+  before any API call. Malformed dates (e.g. `"garbage"`, `"2026-13-01"`) and reversed
+  ranges (start > end) return a soft `{"error": "..."}` payload rather than silently
+  producing an empty `months: []` result. This prevents the silent-zero failure mode
+  that the repo explicitly guards against.
 
 ## Alternatives Considered
 

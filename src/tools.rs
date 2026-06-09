@@ -1358,36 +1358,76 @@ mod tests {
     #[test]
     fn resolve_history_range_valid_explicit_range_passes_through() {
         let today = day("2026-06-08");
-        let result = resolve_history_range(today, None, Some("2026-01-01".into()), Some("2026-05-31".into()));
-        assert_eq!(result, Ok(("2026-01-01".to_string(), "2026-05-31".to_string())));
+        let result = resolve_history_range(
+            today,
+            None,
+            Some("2026-01-01".into()),
+            Some("2026-05-31".into()),
+        );
+        assert_eq!(
+            result,
+            Ok(("2026-01-01".to_string(), "2026-05-31".to_string()))
+        );
     }
 
     #[test]
     fn resolve_history_range_garbage_start_returns_err() {
         let today = day("2026-06-08");
-        let result = resolve_history_range(today, None, Some("garbage".into()), Some("2026-05-31".into()));
-        assert!(result.is_err(), "Expected Err for garbage start, got: {result:?}");
+        let result = resolve_history_range(
+            today,
+            None,
+            Some("garbage".into()),
+            Some("2026-05-31".into()),
+        );
+        assert!(
+            result.is_err(),
+            "Expected Err for garbage start, got: {result:?}"
+        );
     }
 
     #[test]
     fn resolve_history_range_garbage_end_returns_err() {
         let today = day("2026-06-08");
-        let result = resolve_history_range(today, None, Some("2026-01-01".into()), Some("garbage".into()));
-        assert!(result.is_err(), "Expected Err for garbage end, got: {result:?}");
+        let result = resolve_history_range(
+            today,
+            None,
+            Some("2026-01-01".into()),
+            Some("garbage".into()),
+        );
+        assert!(
+            result.is_err(),
+            "Expected Err for garbage end, got: {result:?}"
+        );
     }
 
     #[test]
     fn resolve_history_range_invalid_month_13_returns_err() {
         let today = day("2026-06-08");
-        let result = resolve_history_range(today, None, Some("2026-13-01".into()), Some("2026-05-31".into()));
-        assert!(result.is_err(), "Expected Err for month=13, got: {result:?}");
+        let result = resolve_history_range(
+            today,
+            None,
+            Some("2026-13-01".into()),
+            Some("2026-05-31".into()),
+        );
+        assert!(
+            result.is_err(),
+            "Expected Err for month=13, got: {result:?}"
+        );
     }
 
     #[test]
     fn resolve_history_range_reversed_dates_returns_err() {
         let today = day("2026-06-08");
-        let result = resolve_history_range(today, None, Some("2026-05-01".into()), Some("2026-01-31".into()));
-        assert!(result.is_err(), "Expected Err for start > end, got: {result:?}");
+        let result = resolve_history_range(
+            today,
+            None,
+            Some("2026-05-01".into()),
+            Some("2026-01-31".into()),
+        );
+        assert!(
+            result.is_err(),
+            "Expected Err for start > end, got: {result:?}"
+        );
     }
 
     #[test]
@@ -1395,7 +1435,10 @@ mod tests {
         let today = day("2026-06-08");
         let result = resolve_history_range(today, None, None, None);
         // Default 6 months before 2026-06 = 2025-12 through 2026-05
-        assert_eq!(result, Ok(("2025-12-01".to_string(), "2026-05-31".to_string())));
+        assert_eq!(
+            result,
+            Ok(("2025-12-01".to_string(), "2026-05-31".to_string()))
+        );
     }
 
     #[test]
@@ -1403,6 +1446,9 @@ mod tests {
         let today = day("2026-06-08");
         let result = resolve_history_range(today, Some(3), None, None);
         // 3 months before 2026-06 = 2026-03 through 2026-05
-        assert_eq!(result, Ok(("2026-03-01".to_string(), "2026-05-31".to_string())));
+        assert_eq!(
+            result,
+            Ok(("2026-03-01".to_string(), "2026-05-31".to_string()))
+        );
     }
 }
