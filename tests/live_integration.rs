@@ -37,6 +37,7 @@ use monarch_mcp::financial_overview::compute_overview;
 use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
 use monarch_mcp::net_worth_trend::compute_trend;
 use monarch_mcp::recurring_scan::compute_scan;
+use monarch_mcp::spending_history::{compute_spending_history, range_for_months_count};
 use monarch_mcp::spending_report::compute_spending_report;
 use monarch_mcp::triage::resolve_category_names;
 use std::env;
@@ -1124,4 +1125,110 @@ async fn apply_changeset_resolves_category_name_to_uuid_and_persists() {
         reverted_txn.category.name
     );
     eprintln!("revert persisted: category restored to {original_category_name:?}");
+}
+
+/// Verify that `spending_history` works end-to-end against the real Monarch
+/// API: transactions are fetched for a 3-month window, `compute_spending_history`
+/// produces the correct number of monthly entries, each entry has a non-negative
+/// total, and per-category sums are consistent with the month total.
+///
+/// Does NOT assert specific dollar amounts — those change daily.
+/// Asserts structural validity only.
+#[tokio::test]
+async fn spending_history_returns_valid_structure_from_real_monarch() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+
+    // Use 3 complete months as a quick smoke-test range.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today_days = (now / 86_400) as i64;
+    let (start, end) = range_for_months_count(today_days, 3);
+
+    eprintln!("spending_history range: {start} — {end}");
+
+    let transactions = client
+        .get_transactions(&start, &end, i32::MAX as u32)
+        .await
+        .expect("GetTransactionsList must succeed against real Monarch");
+
+    eprintln!("transactions fetched: {}", transactions.len());
+
+    let history = compute_spending_history(&transactions, &start, &end);
+
+    // Must return exactly 3 monthly entries.
+    assert_eq!(
+        history.months.len(),
+        3,
+        "expected 3 monthly entries for a 3-month range, got {}",
+        history.months.len()
+    );
+    assert_eq!(history.range_start, start);
+    assert_eq!(history.range_end, end);
+
+    for m in &history.months {
+        // Month label must be YYYY-MM format.
+        assert!(
+            m.month.len() == 7 && m.month.contains('-'),
+            "month label must be YYYY-MM format, got {:?}",
+            m.month
+        );
+
+        // Total must be non-negative (expense magnitudes only).
+        assert!(
+            m.total_true_spending >= 0.0,
+            "total_true_spending must be non-negative for month {:?}, got {}",
+            m.month,
+            m.total_true_spending
+        );
+
+        // Fixed + discretionary must equal total (within floating-point tolerance).
+        let split_sum = m.split.fixed + m.split.discretionary;
+        assert!(
+            (split_sum - m.total_true_spending).abs() < 0.01,
+            "fixed ({:.2}) + discretionary ({:.2}) = {:.2} != total_true_spending {:.2} for {:?}",
+            m.split.fixed,
+            m.split.discretionary,
+            split_sum,
+            m.total_true_spending,
+            m.month
+        );
+
+        // Per-category sums must equal total (within tolerance).
+        let cat_sum: f64 = m.by_category.values().sum();
+        assert!(
+            (cat_sum - m.total_true_spending).abs() < 0.01,
+            "by_category sum ({:.2}) != total_true_spending ({:.2}) for {:?}",
+            cat_sum,
+            m.total_true_spending,
+            m.month
+        );
+
+        // No raw transaction list in payload — by_category is aggregates only.
+        // (Structural: values are f64 totals, not Vec<Transaction>.)
+        for (cat, &total) in &m.by_category {
+            assert!(
+                total >= 0.0,
+                "category {:?} total must be non-negative, got {}",
+                cat,
+                total
+            );
+        }
+
+        eprintln!(
+            "  {} total={:.2} fixed={:.2} disc={:.2} categories={} outliers={}",
+            m.month,
+            m.total_true_spending,
+            m.split.fixed,
+            m.split.discretionary,
+            m.by_category.len(),
+            m.outliers.len()
+        );
+    }
 }

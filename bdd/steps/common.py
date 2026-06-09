@@ -37,6 +37,7 @@ def step_assert_reauth_required(context):
     result = (
         getattr(context, "overview_result", None)
         or getattr(context, "spending_result", None)
+        or getattr(context, "history_result", None)
         or getattr(context, "triage_result", None)
         or getattr(context, "inspect_result", None)
         or getattr(context, "progress_result", None)

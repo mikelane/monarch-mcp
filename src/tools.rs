@@ -10,6 +10,7 @@ use crate::inspect_transactions::{blank_to_none, compute_inspection, InspectFilt
 use crate::net_worth_trend::compute_trend;
 use crate::progress_vs_goals::compute_progress;
 use crate::recurring_scan::compute_scan;
+use crate::spending_history::{compute_spending_history, range_for_months_count, SpendingHistory};
 use crate::spending_report::compute_spending_report;
 use crate::triage::{
     build_category_suggestion_map, parse_raw_changes, partition_changeset, propose_changes,
@@ -30,6 +31,24 @@ use serde_json::json;
 pub struct NetWorthTrendParams {
     /// Number of months of history to include (1–24).
     pub months: u32,
+}
+
+/// Input parameters for the `spending_history` tool.
+///
+/// Provide either `months` (last N complete months) or explicit
+/// `start_date` / `end_date`. When both are supplied, explicit dates win.
+/// When neither is supplied, defaults to 6 complete months.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SpendingHistoryParams {
+    /// Number of complete calendar months to include, ending before the
+    /// current (partial) month. Defaults to 6 when omitted.
+    pub months: Option<u32>,
+    /// Explicit range start (ISO-8601 YYYY-MM-DD, e.g. "2025-11-01").
+    /// Overrides `months` when provided.
+    pub start_date: Option<String>,
+    /// Explicit range end (ISO-8601 YYYY-MM-DD, e.g. "2026-04-30").
+    /// Overrides `months` when provided.
+    pub end_date: Option<String>,
 }
 
 /// Input parameters for the `apply_changeset` tool.
@@ -358,6 +377,42 @@ impl MonarchTools {
 
         let payload = match fetch_and_compute_inventory(&client).await {
             Ok(inventory) => serde_json::to_value(&inventory)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
+        description = "Compute per-month true spending over a multi-month range (default: \
+        last 6 complete months). Returns compact per-month aggregates — total true spending, \
+        by-category breakdown, and a fixed-vs-discretionary split — never raw transactions. \
+        Income and transfers are excluded (same exclusion rules as spending_report). \
+        Use this for retirement-spending analysis or building a multi-month baseline.\n\n\
+        Params (all optional):\n\
+        - months: last N complete months (default 6, max 24)\n\
+        - start_date / end_date: explicit ISO-8601 range (overrides months)"
+    )]
+    async fn spending_history(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+        Parameters(params): Parameters<SpendingHistoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_history(&client, params).await {
+            Ok(history) => serde_json::to_value(&history)
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?,
             Err(MonarchError::SessionExpired) => {
                 json!({
@@ -770,6 +825,29 @@ fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     (year, m as u32, d as u32)
 }
 
+async fn fetch_and_compute_history(
+    client: &MonarchClient,
+    params: SpendingHistoryParams,
+) -> Result<SpendingHistory, MonarchError> {
+    let today_day = today_epoch_day();
+
+    // Resolve the date range: explicit start/end wins over months count.
+    let (start, end) = match (params.start_date, params.end_date) {
+        (Some(s), Some(e)) => (s, e),
+        _ => {
+            // Default 6 months; clamp to 1..=24 for sanity.
+            let n = params.months.unwrap_or(6).clamp(1, 24);
+            range_for_months_count(today_day, n)
+        }
+    };
+
+    let transactions = client
+        .get_transactions(&start, &end, i32::MAX as u32)
+        .await?;
+
+    Ok(compute_spending_history(&transactions, &start, &end))
+}
+
 async fn apply_approved_changeset(
     client: &MonarchClient,
     raw_changes: Vec<serde_json::Value>,
@@ -820,7 +898,7 @@ impl ServerHandler for MonarchTools {
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
                 "Monarch Money budgeting advisor. Tools: financial_overview, \
-             spending_report, triage_uncategorized, inspect_transactions, \
+             spending_report, spending_history, triage_uncategorized, inspect_transactions, \
              apply_changeset, progress_vs_goals, \
              cashflow_forecast, net_worth_trend, recurring_scan, account_inventory."
                     .to_string(),
