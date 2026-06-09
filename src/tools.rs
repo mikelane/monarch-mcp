@@ -419,6 +419,9 @@ impl MonarchTools {
                     "error": "Session expired — re-authenticate by running `monarch-mcp login`"
                 })
             }
+            Err(MonarchError::InvalidInput(msg)) => {
+                json!({ "error": msg })
+            }
             Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
         };
 
@@ -825,21 +828,55 @@ fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     (year, m as u32, d as u32)
 }
 
+/// Resolve the date range for `spending_history`, returning `(start, end)` as
+/// ISO-8601 strings or an error message describing why the input is invalid.
+///
+/// Resolution rules (in priority order):
+/// 1. When both `start_date` and `end_date` are supplied, validate each via
+///    `parse_iso_date_to_epoch_day` and reject if either is malformed or if
+///    `start > end`.
+/// 2. Otherwise, fall back to `range_for_months_count(today_day, months)`,
+///    where `months` defaults to 6 and is clamped to 1..=24.
+///
+/// Returning `Err` with a clear message rather than silently producing an
+/// empty result prevents the silent-zero failure mode (ADR 0011).
+fn resolve_history_range(
+    today_day: i64,
+    months: Option<u32>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<(String, String), String> {
+    match (start_date, end_date) {
+        (Some(s), Some(e)) => {
+            let start_day = parse_iso_date_to_epoch_day(&s)
+                .ok_or_else(|| format!("invalid start_date {s:?}: must be YYYY-MM-DD"))?;
+            let end_day = parse_iso_date_to_epoch_day(&e)
+                .ok_or_else(|| format!("invalid end_date {e:?}: must be YYYY-MM-DD"))?;
+            if start_day > end_day {
+                return Err(format!(
+                    "start_date {s:?} is after end_date {e:?}: range must be start ≤ end"
+                ));
+            }
+            Ok((s, e))
+        }
+        _ => {
+            let n = months.unwrap_or(6).clamp(1, 24);
+            Ok(range_for_months_count(today_day, n))
+        }
+    }
+}
+
 async fn fetch_and_compute_history(
     client: &MonarchClient,
     params: SpendingHistoryParams,
 ) -> Result<SpendingHistory, MonarchError> {
     let today_day = today_epoch_day();
 
-    // Resolve the date range: explicit start/end wins over months count.
-    let (start, end) = match (params.start_date, params.end_date) {
-        (Some(s), Some(e)) => (s, e),
-        _ => {
-            // Default 6 months; clamp to 1..=24 for sanity.
-            let n = params.months.unwrap_or(6).clamp(1, 24);
-            range_for_months_count(today_day, n)
-        }
-    };
+    // Resolve and validate the date range; malformed/reversed explicit dates
+    // surface as a clear error rather than silently returning empty months.
+    let (start, end) =
+        resolve_history_range(today_day, params.months, params.start_date, params.end_date)
+            .map_err(MonarchError::InvalidInput)?;
 
     let transactions = client
         .get_transactions(&start, &end, i32::MAX as u32)
@@ -1314,5 +1351,58 @@ mod tests {
         } else {
             eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
         }
+    }
+
+    // --- resolve_history_range ---
+
+    #[test]
+    fn resolve_history_range_valid_explicit_range_passes_through() {
+        let today = day("2026-06-08");
+        let result = resolve_history_range(today, None, Some("2026-01-01".into()), Some("2026-05-31".into()));
+        assert_eq!(result, Ok(("2026-01-01".to_string(), "2026-05-31".to_string())));
+    }
+
+    #[test]
+    fn resolve_history_range_garbage_start_returns_err() {
+        let today = day("2026-06-08");
+        let result = resolve_history_range(today, None, Some("garbage".into()), Some("2026-05-31".into()));
+        assert!(result.is_err(), "Expected Err for garbage start, got: {result:?}");
+    }
+
+    #[test]
+    fn resolve_history_range_garbage_end_returns_err() {
+        let today = day("2026-06-08");
+        let result = resolve_history_range(today, None, Some("2026-01-01".into()), Some("garbage".into()));
+        assert!(result.is_err(), "Expected Err for garbage end, got: {result:?}");
+    }
+
+    #[test]
+    fn resolve_history_range_invalid_month_13_returns_err() {
+        let today = day("2026-06-08");
+        let result = resolve_history_range(today, None, Some("2026-13-01".into()), Some("2026-05-31".into()));
+        assert!(result.is_err(), "Expected Err for month=13, got: {result:?}");
+    }
+
+    #[test]
+    fn resolve_history_range_reversed_dates_returns_err() {
+        let today = day("2026-06-08");
+        let result = resolve_history_range(today, None, Some("2026-05-01".into()), Some("2026-01-31".into()));
+        assert!(result.is_err(), "Expected Err for start > end, got: {result:?}");
+    }
+
+    #[test]
+    fn resolve_history_range_no_explicit_dates_falls_back_to_months_default() {
+        let today = day("2026-06-08");
+        let result = resolve_history_range(today, None, None, None);
+        // Default 6 months before 2026-06 = 2025-12 through 2026-05
+        assert_eq!(result, Ok(("2025-12-01".to_string(), "2026-05-31".to_string())));
+    }
+
+    #[test]
+    fn resolve_history_range_explicit_months_overrides_default() {
+        let today = day("2026-06-08");
+        let result = resolve_history_range(today, Some(3), None, None);
+        // 3 months before 2026-06 = 2026-03 through 2026-05
+        assert_eq!(result, Ok(("2026-03-01".to_string(), "2026-05-31".to_string())));
     }
 }
