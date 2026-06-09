@@ -859,7 +859,13 @@ fn resolve_history_range(
             }
             Ok((s, e))
         }
-        _ => {
+        (Some(_), None) => Err(
+            "provide BOTH start_date and end_date, or neither (got only start_date)".to_string(),
+        ),
+        (None, Some(_)) => {
+            Err("provide BOTH start_date and end_date, or neither (got only end_date)".to_string())
+        }
+        (None, None) => {
             let n = months.unwrap_or(6).clamp(1, 24);
             Ok(range_for_months_count(today_day, n))
         }
@@ -1449,6 +1455,36 @@ mod tests {
         assert_eq!(
             result,
             Ok(("2026-03-01".to_string(), "2026-05-31".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolve_history_range_only_start_date_returns_err() {
+        let today = day("2026-06-08");
+        let result = resolve_history_range(today, None, Some("2026-01-01".into()), None);
+        assert!(
+            result.is_err(),
+            "Expected Err when only start_date is provided, got: {result:?}"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("start_date"),
+            "Error message should mention start_date, got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_history_range_only_end_date_returns_err() {
+        let today = day("2026-06-08");
+        let result = resolve_history_range(today, None, None, Some("2026-05-31".into()));
+        assert!(
+            result.is_err(),
+            "Expected Err when only end_date is provided, got: {result:?}"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("end_date"),
+            "Error message should mention end_date, got: {msg:?}"
         );
     }
 }

@@ -100,10 +100,17 @@ mental model of "last 6 months" and avoids partial-month distortion.
   clamped to a minimum of 1 inside `range_for_months_count` to prevent u32 underflow
   when callers pass 0.
 - Explicit `start_date`/`end_date` inputs are validated via `resolve_history_range`
-  before any API call. Malformed dates (e.g. `"garbage"`, `"2026-13-01"`) and reversed
-  ranges (start > end) return a soft `{"error": "..."}` payload rather than silently
-  producing an empty `months: []` result. This prevents the silent-zero failure mode
-  that the repo explicitly guards against.
+  before any API call. Malformed dates (e.g. `"garbage"`, `"2026-13-01"`), reversed
+  ranges (start > end), and partial inputs (only one of `start_date`/`end_date`
+  provided) return a soft `{"error": "..."}` payload rather than silently falling back
+  to the months default. This prevents the silent-degradation failure mode: a caller
+  who provides only `start_date` gets an error, not a quietly-ignored bound.
+- Fixed-category token matching tolerates simple English plural forms: a category token
+  matches a pattern token when they are equal OR the category token equals the pattern
+  token + "s". This makes `"Student Loans"` (a default Monarch category) and
+  `"Loans"`, `"Insurances"`, `"Mortgages"` classify as FIXED, while the run #1
+  false-positive guard is preserved: `"rentals"` stripped to `"rental"` does not equal
+  `"rent"`, so `"Concert Rentals"` remains DISCRETIONARY.
 
 ## Alternatives Considered
 
