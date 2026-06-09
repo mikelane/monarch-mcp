@@ -393,17 +393,27 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9c TRIANGULATE: amount=0 is still rejected (not just nonzero)
+    // 9c TRIANGULATE: nonzero amount is also rejected (triangulate zero vs nonzero)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn change_entry_amount_zero_is_also_rejected() {
-        let raw = serde_json::json!({"id": "t1", "amount": 0.0});
+    fn change_entry_with_nonzero_amount_is_rejected() {
+        let raw = serde_json::json!({"id": "t-nonzero", "amount": 99.99});
         let entries = parse_raw_changes(vec![raw]);
         let result = partition_changeset(&entries);
-        assert!(
-            !result.rejected_changes.is_empty(),
-            "amount=0 must still be rejected"
+        assert_eq!(
+            result.applied_changes.len(),
+            0,
+            "nonzero amount must be rejected"
+        );
+        assert_eq!(
+            result.rejected_changes.len(),
+            1,
+            "one rejection expected for nonzero amount"
+        );
+        assert_eq!(
+            result.rejected_changes[0].id, "t-nonzero",
+            "real txn id must be preserved"
         );
     }
 
@@ -645,6 +655,27 @@ mod tests {
     }
 
     #[test]
+    fn change_with_notes_and_no_category_passes_through_untouched() {
+        let categories = vec![make_cat("cat-uuid-1", "Pets")];
+        // notes-only change — no category field
+        let applied = vec![AppliedChange {
+            id: "txn-notes".to_string(),
+            category: None,
+            tags: None,
+            notes: Some("important note".to_string()),
+        }];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+        assert_eq!(rejections.len(), 0, "no rejection for notes-only change");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].category, None, "category must remain None");
+        assert_eq!(
+            resolved[0].notes,
+            Some("important note".to_string()),
+            "notes must pass through unchanged"
+        );
+    }
+
+    #[test]
     fn resolution_map_built_correctly_from_multiple_categories() {
         let categories = vec![
             make_cat("id-a", "Coffee"),
@@ -732,6 +763,12 @@ mod tests {
             rejections[0].reason.to_lowercase().contains("ambiguous")
                 || rejections[0].reason.to_lowercase().contains("multiple"),
             "rejection reason must explain the ambiguity; got: {:?}",
+            rejections[0].reason
+        );
+        // Pin the exact distinct-UUID count to catch mutations that alter the math
+        assert!(
+            rejections[0].reason.contains("2 matches"),
+            "rejection reason must pin the distinct UUID count; got: {:?}",
             rejections[0].reason
         );
     }

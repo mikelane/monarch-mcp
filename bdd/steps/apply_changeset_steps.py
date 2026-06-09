@@ -44,6 +44,26 @@ def step_category_has_uuid(context, name: str, uuid: str):
     )
 
 
+@given('two categories named "{name}" exist with UUIDs "{uuid_a}" and "{uuid_b}"')
+def step_two_categories_same_name(context, name: str, uuid_a: str, uuid_b: str):
+    """Register two distinct categories with the same display name.
+
+    This creates the ambiguous-name condition that issue #53 fixes.
+    The resolver must reject the ambiguous name to avoid silent misrouting.
+    """
+    existing = getattr(context, "_categories_override", [])
+    # Remove any existing entries with this name (could be from prior steps)
+    existing = [c for c in existing if c["name"] != name]
+    # Add both distinct UUIDs under the same name
+    existing.append({"id": uuid_a, "name": name})
+    existing.append({"id": uuid_b, "name": name})
+    context._categories_override = existing
+    requests.post(
+        f"{context.mock_base}/configure",
+        json={"categories_override": existing},
+    )
+
+
 @given('no category named "{name}" exists')
 def step_no_category_named(context, name: str):
     """Ensure the named category is absent from the mock's catalog.

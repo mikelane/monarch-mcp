@@ -34,3 +34,12 @@ Feature: apply_changeset resolves category names to UUIDs
       When the advisor applies a changeset adding tag "important" to transaction "txn-3"
       Then the mutation for transaction "txn-3" recorded no categoryId
       And no rejected changes are reported
+
+  Rule: An ambiguous category name (multiple UUIDs sharing one name) is rejected
+
+    Scenario: An ambiguous category name is rejected without sending to the API
+      Given a transaction "txn-4" exists with category "Uncategorized"
+      And two categories named "Pets" exist with UUIDs "pet-uuid-system" and "pet-uuid-custom"
+      When the advisor applies a changeset setting transaction "txn-4" category to "Pets"
+      Then no mutation is recorded for transaction "txn-4"
+      And a rejected change is reported for transaction "txn-4" mentioning "ambiguous"
