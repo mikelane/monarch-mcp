@@ -29,6 +29,13 @@ pub enum MonarchError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// Caller-supplied input was malformed or logically invalid (e.g. a
+    /// non-ISO date string, or start_date after end_date). Surfaces as a soft
+    /// error payload so the advisor receives a clear message rather than empty
+    /// months or a hard MCP fault.
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     /// Any other unexpected error.
     #[error("Internal error: {0}")]
     Internal(String),

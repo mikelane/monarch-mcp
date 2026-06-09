@@ -106,7 +106,7 @@ pub fn compute_spending_report(
 /// - `None` (unknown group): defensive fallback — negative amounts count as
 ///   expense magnitude so real spending is never silently hidden. Positive
 ///   amounts contribute zero (treated as income/refund). See ADR 0004.
-fn transaction_spend_magnitude(txn: &Transaction) -> f64 {
+pub(crate) fn transaction_spend_magnitude(txn: &Transaction) -> f64 {
     match txn.category.group_type.as_deref() {
         Some("expense") => (-txn.amount).max(0.0),
         Some("income") | Some("transfer") => 0.0,
