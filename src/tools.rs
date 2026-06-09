@@ -13,6 +13,7 @@ use crate::recurring_scan::compute_scan;
 use crate::spending_report::compute_spending_report;
 use crate::triage::{
     build_category_suggestion_map, parse_raw_changes, partition_changeset, propose_changes,
+    resolve_category_names,
 };
 use rmcp::schemars;
 use rmcp::{
@@ -174,7 +175,10 @@ impl MonarchTools {
 
     #[tool(
         description = "Apply an approved changeset, updating only category, tags, and notes. \
-        Any other field (amount, account, merchant, date, or unknown fields) is forbidden — \
+        Category values are supplied as human-readable names (e.g. \"Pets\") and are resolved \
+        to Monarch category UUIDs server-side before the mutation is sent. Unknown category \
+        names are rejected and reported back — they are never sent to the API. \
+        Any other field (amount, account, merchant, date, or unknown fields) is also forbidden — \
         entries containing them are rejected and reported back with the original transaction id. \
         The set of transaction ids is never altered."
     )]
@@ -775,9 +779,22 @@ async fn apply_approved_changeset(
     let entries = parse_raw_changes(raw_changes);
 
     // Partition into allowed and forbidden entries — forbidden ones never reach the API.
-    let result = partition_changeset(&entries);
+    let mut result = partition_changeset(&entries);
 
-    // Send only the allowed changes to the Monarch API.
+    // Resolve category names → UUIDs before calling the Monarch API.
+    // Fetch categories once per apply_changeset call (not per change).
+    // Any change whose category name is not in Monarch's catalog is rejected
+    // here and removed from applied_changes — it is never sent to the API.
+    if result.applied_changes.iter().any(|c| c.category.is_some()) {
+        let categories = client.get_categories().await?;
+        let (resolved, new_rejections) =
+            resolve_category_names(&categories, result.applied_changes);
+        result.applied_changes = resolved;
+        result.rejected_changes.extend(new_rejections);
+        result.transaction_count = result.applied_changes.len() + result.rejected_changes.len();
+    }
+
+    // Send only the allowed, resolved changes to the Monarch API.
     for change in &result.applied_changes {
         client
             .update_transaction(

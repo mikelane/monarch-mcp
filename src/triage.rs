@@ -4,7 +4,7 @@
 //! unit-tested without a running mock server. The tool handlers in `tools.rs`
 //! fetch data and delegate here.
 
-use crate::client::Transaction;
+use crate::client::{CategoryWithId, Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -151,6 +151,75 @@ pub fn parse_raw_changes(raw: Vec<serde_json::Value>) -> Vec<ParsedEntry> {
 pub enum ParsedEntry {
     Ok(ChangeEntry),
     Rejected(RejectedChange),
+}
+
+/// Resolve category names to Monarch category UUIDs.
+///
+/// Takes the caller-supplied `AppliedChange` list (which carries category *names*
+/// at the MCP boundary) and the full category list from `get_categories()`.
+///
+/// For each change that carries a category name:
+/// - If the name resolves to exactly one category UUID, the name is replaced with the UUID.
+/// - If the name is ambiguous (maps to multiple distinct UUIDs), the change is rejected
+///   with a clear reason — it is **never** sent to the Monarch API (silent misrouting
+///   would apply the category to an arbitrary UUID the user never selected).
+/// - If the name is unknown, the change is moved to the rejections list with a
+///   clear reason — it is **never** sent to the Monarch API.
+///
+/// Changes with no category (tags/notes only) pass through unchanged.
+///
+/// Returns `(resolved_changes, new_rejections)`.
+pub fn resolve_category_names(
+    categories: &[CategoryWithId],
+    applied: Vec<AppliedChange>,
+) -> (Vec<AppliedChange>, Vec<RejectedChange>) {
+    // Build a map from category name to all distinct UUIDs that share that name.
+    let mut name_to_ids: HashMap<&str, Vec<&str>> = HashMap::new();
+    for cat in categories {
+        name_to_ids
+            .entry(cat.name.as_str())
+            .or_default()
+            .push(cat.id.as_str());
+    }
+
+    // Deduplicate the UUID lists so we can detect truly distinct IDs.
+    for ids in name_to_ids.values_mut() {
+        ids.sort();
+        ids.dedup();
+    }
+
+    let mut resolved = Vec::new();
+    let mut rejections = Vec::new();
+
+    for mut change in applied {
+        match &change.category {
+            None => resolved.push(change),
+            Some(name) => match name_to_ids.get(name.as_str()) {
+                Some(ids) if ids.len() == 1 => {
+                    // Unambiguous: exactly one distinct UUID for this name.
+                    change.category = Some(ids[0].to_string());
+                    resolved.push(change);
+                }
+                Some(ids) if ids.len() > 1 => {
+                    // Ambiguous: multiple distinct UUIDs map to the same name.
+                    // Reject to avoid silent misrouting.
+                    rejections.push(RejectedChange {
+                        id: change.id,
+                        reason: format!("ambiguous category {:?}: {} matches", name, ids.len()),
+                    });
+                }
+                _ => {
+                    // Unknown name (no entry in name_to_ids).
+                    rejections.push(RejectedChange {
+                        id: change.id,
+                        reason: format!("unknown category {:?}", name),
+                    });
+                }
+            },
+        }
+    }
+
+    (resolved, rejections)
 }
 
 /// Apply an approved changeset, filtering out forbidden mutations.
@@ -324,17 +393,27 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 9c TRIANGULATE: amount=0 is still rejected (not just nonzero)
+    // 9c TRIANGULATE: nonzero amount is also rejected (triangulate zero vs nonzero)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn change_entry_amount_zero_is_also_rejected() {
-        let raw = serde_json::json!({"id": "t1", "amount": 0.0});
+    fn change_entry_with_nonzero_amount_is_rejected() {
+        let raw = serde_json::json!({"id": "t-nonzero", "amount": 99.99});
         let entries = parse_raw_changes(vec![raw]);
         let result = partition_changeset(&entries);
-        assert!(
-            !result.rejected_changes.is_empty(),
-            "amount=0 must still be rejected"
+        assert_eq!(
+            result.applied_changes.len(),
+            0,
+            "nonzero amount must be rejected"
+        );
+        assert_eq!(
+            result.rejected_changes.len(),
+            1,
+            "one rejection expected for nonzero amount"
+        );
+        assert_eq!(
+            result.rejected_changes[0].id, "t-nonzero",
+            "real txn id must be preserved"
         );
     }
 
@@ -499,5 +578,220 @@ mod tests {
     fn parse_and_partition_single(raw: serde_json::Value) -> ApplyResult {
         let entries = parse_raw_changes(vec![raw]);
         partition_changeset(&entries)
+    }
+
+    // -----------------------------------------------------------------------
+    // 9a RED: resolve_category_names — known name resolves to its id
+    // -----------------------------------------------------------------------
+
+    fn make_cat(id: &str, name: &str) -> CategoryWithId {
+        CategoryWithId {
+            id: id.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    fn make_applied(id: &str, category: Option<&str>) -> AppliedChange {
+        AppliedChange {
+            id: id.to_string(),
+            category: category.map(str::to_string),
+            tags: None,
+            notes: None,
+        }
+    }
+
+    #[test]
+    fn known_category_name_resolves_to_id() {
+        let categories = vec![make_cat("cat-uuid-1", "Pets")];
+        let applied = vec![make_applied("txn-1", Some("Pets"))];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+        assert_eq!(rejections.len(), 0, "no rejections expected for known name");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].category.as_deref(),
+            Some("cat-uuid-1"),
+            "category should be resolved to UUID"
+        );
+    }
+
+    #[test]
+    fn unknown_category_name_produces_rejection_with_txn_id_preserved() {
+        let categories = vec![make_cat("cat-uuid-1", "Pets")];
+        let applied = vec![make_applied("txn-99", Some("NoSuchCategory"))];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+        assert_eq!(
+            resolved.len(),
+            0,
+            "unknown category must not be in resolved"
+        );
+        assert_eq!(rejections.len(), 1, "one rejection expected");
+        assert_eq!(rejections[0].id, "txn-99", "real txn id must be preserved");
+        assert!(
+            rejections[0].reason.contains("NoSuchCategory"),
+            "rejection reason must name the unknown category, got: {:?}",
+            rejections[0].reason
+        );
+    }
+
+    #[test]
+    fn change_with_no_category_passes_through_untouched() {
+        let categories = vec![make_cat("cat-uuid-1", "Pets")];
+        // tags-only change — no category field
+        let applied = vec![AppliedChange {
+            id: "txn-tags".to_string(),
+            category: None,
+            tags: Some(vec!["tag-a".to_string()]),
+            notes: None,
+        }];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+        assert_eq!(rejections.len(), 0, "no rejection for tags-only change");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].category, None, "category must remain None");
+        assert_eq!(
+            resolved[0].tags,
+            Some(vec!["tag-a".to_string()]),
+            "tags must pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn change_with_notes_and_no_category_passes_through_untouched() {
+        let categories = vec![make_cat("cat-uuid-1", "Pets")];
+        // notes-only change — no category field
+        let applied = vec![AppliedChange {
+            id: "txn-notes".to_string(),
+            category: None,
+            tags: None,
+            notes: Some("important note".to_string()),
+        }];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+        assert_eq!(rejections.len(), 0, "no rejection for notes-only change");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].category, None, "category must remain None");
+        assert_eq!(
+            resolved[0].notes,
+            Some("important note".to_string()),
+            "notes must pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn resolution_map_built_correctly_from_multiple_categories() {
+        let categories = vec![
+            make_cat("id-a", "Coffee"),
+            make_cat("id-b", "Pets"),
+            make_cat("id-c", "Dining"),
+        ];
+        let applied = vec![
+            make_applied("t1", Some("Coffee")),
+            make_applied("t2", Some("Dining")),
+        ];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+        assert_eq!(rejections.len(), 0);
+        assert_eq!(resolved.len(), 2);
+        let coffee_resolved = resolved.iter().find(|c| c.id == "t1").unwrap();
+        let dining_resolved = resolved.iter().find(|c| c.id == "t2").unwrap();
+        assert_eq!(coffee_resolved.category.as_deref(), Some("id-a"));
+        assert_eq!(dining_resolved.category.as_deref(), Some("id-c"));
+    }
+
+    // -----------------------------------------------------------------------
+    // 9c TRIANGULATE: mixed batch — known and unknown in same call
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mixed_batch_separates_resolved_and_rejected() {
+        let categories = vec![make_cat("id-a", "Coffee"), make_cat("id-b", "Pets")];
+        let applied = vec![
+            make_applied("t-known", Some("Coffee")),
+            make_applied("t-unknown", Some("MadeUp")),
+            make_applied("t-no-cat", None), // tags/notes only
+        ];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+        // Only the unknown name becomes a rejection
+        assert_eq!(rejections.len(), 1, "one rejection for unknown name");
+        assert_eq!(rejections[0].id, "t-unknown");
+        // The known name and the no-category change are both resolved
+        assert_eq!(resolved.len(), 2);
+        let known = resolved.iter().find(|c| c.id == "t-known").unwrap();
+        assert_eq!(known.category.as_deref(), Some("id-a"));
+        let no_cat = resolved.iter().find(|c| c.id == "t-no-cat").unwrap();
+        assert_eq!(no_cat.category, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // 9c TRIANGULATE: empty categories list → all named changes rejected
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn empty_category_list_rejects_all_named_changes() {
+        let categories: Vec<CategoryWithId> = vec![];
+        let applied = vec![make_applied("t1", Some("Pets"))];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+        assert_eq!(
+            resolved.len(),
+            0,
+            "no resolvable changes with empty catalog"
+        );
+        assert_eq!(rejections.len(), 1, "one rejection for unknown category");
+        assert_eq!(rejections[0].id, "t1");
+    }
+
+    // -----------------------------------------------------------------------
+    // 9c TRIANGULATE: ambiguous category name must be rejected, not silently
+    // resolved to an arbitrary UUID (issue #53)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ambiguous_category_name_is_rejected() {
+        // Two distinct UUIDs share the same display name "Pets".
+        // This is a real Monarch shape (same name under different groups, or
+        // system + custom pair). The resolver must reject the ambiguous name,
+        // not silently apply it to one arbitrary UUID.
+        let categories = vec![
+            make_cat("uuid-pets-system", "Pets"),
+            make_cat("uuid-pets-custom", "Pets"),
+        ];
+        let applied = vec![make_applied("txn-1", Some("Pets"))];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+
+        // The change must be rejected, not silently routed to an arbitrary UUID.
+        assert_eq!(resolved.len(), 0, "ambiguous name must not be resolved");
+        assert_eq!(rejections.len(), 1, "one rejection for ambiguous name");
+        assert_eq!(rejections[0].id, "txn-1", "real txn id must be preserved");
+        assert!(
+            rejections[0].reason.to_lowercase().contains("ambiguous")
+                || rejections[0].reason.to_lowercase().contains("multiple"),
+            "rejection reason must explain the ambiguity; got: {:?}",
+            rejections[0].reason
+        );
+        // Pin the exact distinct-UUID count to catch mutations that alter the math
+        assert!(
+            rejections[0].reason.contains("2 matches"),
+            "rejection reason must pin the distinct UUID count; got: {:?}",
+            rejections[0].reason
+        );
+    }
+
+    #[test]
+    fn same_category_name_with_same_uuid_twice_is_not_ambiguous() {
+        // If the same name + same UUID appears twice in the catalog
+        // (e.g., duplicate or lazy evaluation), deduplicating by UUID
+        // means it resolves as unambiguous (only one distinct UUID).
+        let categories = vec![
+            make_cat("uuid-pets-1", "Pets"),
+            make_cat("uuid-pets-1", "Pets"), // same UUID, same name
+        ];
+        let applied = vec![make_applied("txn-1", Some("Pets"))];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+
+        // Should resolve normally, not be rejected as ambiguous.
+        assert_eq!(
+            resolved.len(),
+            1,
+            "same UUID deduplication must allow resolve"
+        );
+        assert_eq!(resolved[0].category.as_deref(), Some("uuid-pets-1"));
+        assert_eq!(rejections.len(), 0, "no rejection for non-ambiguous case");
     }
 }
