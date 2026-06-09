@@ -36,8 +36,6 @@ fn applied(id: &str, category: &str) -> AppliedChange {
 }
 
 #[test]
-#[ignore = "RED: proves the duplicate-name silent-misrouting bug; un-ignore when \
-            resolve_category_names rejects ambiguous names (dev fix for #53)"]
 fn ambiguous_category_name_is_rejected_not_silently_misrouted() {
     // Two real categories share the display name "Pets" with different UUIDs.
     let categories = vec![

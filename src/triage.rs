@@ -159,7 +159,10 @@ pub enum ParsedEntry {
 /// at the MCP boundary) and the full category list from `get_categories()`.
 ///
 /// For each change that carries a category name:
-/// - If the name resolves to a known category, the name is replaced with the UUID.
+/// - If the name resolves to exactly one category UUID, the name is replaced with the UUID.
+/// - If the name is ambiguous (maps to multiple distinct UUIDs), the change is rejected
+///   with a clear reason — it is **never** sent to the Monarch API (silent misrouting
+///   would apply the category to an arbitrary UUID the user never selected).
 /// - If the name is unknown, the change is moved to the rejections list with a
 ///   clear reason — it is **never** sent to the Monarch API.
 ///
@@ -170,10 +173,20 @@ pub fn resolve_category_names(
     categories: &[CategoryWithId],
     applied: Vec<AppliedChange>,
 ) -> (Vec<AppliedChange>, Vec<RejectedChange>) {
-    let name_to_id: HashMap<&str, &str> = categories
-        .iter()
-        .map(|c| (c.name.as_str(), c.id.as_str()))
-        .collect();
+    // Build a map from category name to all distinct UUIDs that share that name.
+    let mut name_to_ids: HashMap<&str, Vec<&str>> = HashMap::new();
+    for cat in categories {
+        name_to_ids
+            .entry(cat.name.as_str())
+            .or_default()
+            .push(cat.id.as_str());
+    }
+
+    // Deduplicate the UUID lists so we can detect truly distinct IDs.
+    for ids in name_to_ids.values_mut() {
+        ids.sort();
+        ids.dedup();
+    }
 
     let mut resolved = Vec::new();
     let mut rejections = Vec::new();
@@ -181,15 +194,27 @@ pub fn resolve_category_names(
     for mut change in applied {
         match &change.category {
             None => resolved.push(change),
-            Some(name) => match name_to_id.get(name.as_str()) {
-                Some(&id) => {
-                    change.category = Some(id.to_string());
+            Some(name) => match name_to_ids.get(name.as_str()) {
+                Some(ids) if ids.len() == 1 => {
+                    // Unambiguous: exactly one distinct UUID for this name.
+                    change.category = Some(ids[0].to_string());
                     resolved.push(change);
                 }
-                None => rejections.push(RejectedChange {
-                    id: change.id,
-                    reason: format!("unknown category {:?}", name),
-                }),
+                Some(ids) if ids.len() > 1 => {
+                    // Ambiguous: multiple distinct UUIDs map to the same name.
+                    // Reject to avoid silent misrouting.
+                    rejections.push(RejectedChange {
+                        id: change.id,
+                        reason: format!("ambiguous category {:?}: {} matches", name, ids.len()),
+                    });
+                }
+                _ => {
+                    // Unknown name (no entry in name_to_ids).
+                    rejections.push(RejectedChange {
+                        id: change.id,
+                        reason: format!("unknown category {:?}", name),
+                    });
+                }
             },
         }
     }
@@ -679,5 +704,57 @@ mod tests {
         );
         assert_eq!(rejections.len(), 1, "one rejection for unknown category");
         assert_eq!(rejections[0].id, "t1");
+    }
+
+    // -----------------------------------------------------------------------
+    // 9c TRIANGULATE: ambiguous category name must be rejected, not silently
+    // resolved to an arbitrary UUID (issue #53)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ambiguous_category_name_is_rejected() {
+        // Two distinct UUIDs share the same display name "Pets".
+        // This is a real Monarch shape (same name under different groups, or
+        // system + custom pair). The resolver must reject the ambiguous name,
+        // not silently apply it to one arbitrary UUID.
+        let categories = vec![
+            make_cat("uuid-pets-system", "Pets"),
+            make_cat("uuid-pets-custom", "Pets"),
+        ];
+        let applied = vec![make_applied("txn-1", Some("Pets"))];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+
+        // The change must be rejected, not silently routed to an arbitrary UUID.
+        assert_eq!(resolved.len(), 0, "ambiguous name must not be resolved");
+        assert_eq!(rejections.len(), 1, "one rejection for ambiguous name");
+        assert_eq!(rejections[0].id, "txn-1", "real txn id must be preserved");
+        assert!(
+            rejections[0].reason.to_lowercase().contains("ambiguous")
+                || rejections[0].reason.to_lowercase().contains("multiple"),
+            "rejection reason must explain the ambiguity; got: {:?}",
+            rejections[0].reason
+        );
+    }
+
+    #[test]
+    fn same_category_name_with_same_uuid_twice_is_not_ambiguous() {
+        // If the same name + same UUID appears twice in the catalog
+        // (e.g., duplicate or lazy evaluation), deduplicating by UUID
+        // means it resolves as unambiguous (only one distinct UUID).
+        let categories = vec![
+            make_cat("uuid-pets-1", "Pets"),
+            make_cat("uuid-pets-1", "Pets"), // same UUID, same name
+        ];
+        let applied = vec![make_applied("txn-1", Some("Pets"))];
+        let (resolved, rejections) = resolve_category_names(&categories, applied);
+
+        // Should resolve normally, not be rejected as ambiguous.
+        assert_eq!(
+            resolved.len(),
+            1,
+            "same UUID deduplication must allow resolve"
+        );
+        assert_eq!(resolved[0].category.as_deref(), Some("uuid-pets-1"));
+        assert_eq!(rejections.len(), 0, "no rejection for non-ambiguous case");
     }
 }
