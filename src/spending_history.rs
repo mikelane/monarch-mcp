@@ -384,12 +384,11 @@ fn build_monthly_spend(month: String, transactions: &[&Transaction]) -> MonthlyS
 
     for txn in transactions {
         let magnitude = transaction_spend_magnitude(txn);
-        if magnitude == 0.0 && !matches!(txn.category.group_type.as_deref(), Some("expense") | None)
-        {
-            continue; // skip income/transfer entirely
-        }
+        // transaction_spend_magnitude returns 0.0 for income/transfer groups and
+        // for positive amounts in expense categories (refunds). A single zero
+        // check handles all three cases — the earlier group_type branch was dead.
         if magnitude == 0.0 {
-            continue; // refund or zero — no spend contribution
+            continue;
         }
 
         *by_category.entry(txn.category.name.clone()).or_insert(0.0) += magnitude;
