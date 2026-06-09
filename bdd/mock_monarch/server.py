@@ -43,6 +43,10 @@ _DEFAULT_FIXTURES: dict[str, Any] = {
     "applied_changes": [],
     # When True every authenticated endpoint returns 401
     "session_expired": False,
+    # Optional explicit category list: [{id, name}]. When set, GetCategories returns
+    # these directly instead of deriving ids from budgets/transactions. Used by
+    # @ISSUE-53 BDD tests that need to assert exact UUIDs are passed to mutations.
+    "categories_override": None,
     # --- Epic B fixtures ---
     # List of recurring charge dicts for Web_GetUpcomingRecurringTransactionItems:
     #   {merchant, stream_amount, actual_amount?, frequency, is_approximate, is_past}
@@ -421,10 +425,37 @@ def _handle_get_aggregate_snapshots(body: dict) -> dict:
 def _handle_get_categories(body: dict) -> dict:
     """GetCategories → categories[{id, order, name, ...}]
 
-    Returns one category per budget entry (so budget join works) plus any
-    extra categories derived from the transactions fixture.
+    When ``categories_override`` is set (a list of {id, name} dicts), those
+    are returned directly — used by @ISSUE-53 tests that need exact UUIDs.
+    Otherwise derives one category per budget entry plus any categories from
+    the transactions fixture.
     """
     fixtures = get_fixtures()
+
+    # Explicit override: return as-is with full Monarch shape fields filled in.
+    override = fixtures.get("categories_override")
+    if override is not None:
+        cats = []
+        for i, c in enumerate(override):
+            cats.append({
+                "id": c["id"],
+                "order": i,
+                "name": c["name"],
+                "systemCategory": None,
+                "isSystemCategory": False,
+                "isDisabled": False,
+                "updatedAt": "2026-01-01T00:00:00+00:00",
+                "createdAt": "2026-01-01T00:00:00+00:00",
+                "group": {
+                    "id": "grp-expense",
+                    "name": "Expense",
+                    "type": "expense",
+                    "__typename": "CategoryGroup",
+                },
+                "__typename": "Category",
+            })
+        return {"data": {"categories": cats}}
+
     seen: dict[str, dict] = {}
 
     # Build from budgets
