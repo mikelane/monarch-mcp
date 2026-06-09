@@ -38,6 +38,7 @@ use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
 use monarch_mcp::net_worth_trend::compute_trend;
 use monarch_mcp::recurring_scan::compute_scan;
 use monarch_mcp::spending_report::compute_spending_report;
+use monarch_mcp::triage::resolve_category_names;
 use std::env;
 
 fn live_enabled() -> bool {
@@ -982,4 +983,140 @@ async fn account_inventory_returns_valid_structure() {
     eprintln!("accounts with unknown_subtype: {unknown_count}");
     // Non-fatal: warn only. A strict assert here would break if Monarch adds a
     // new subtype before we can update ADR 0009 and the bucket map.
+}
+
+/// Verify that apply_changeset resolves category names to UUIDs end-to-end
+/// against the real Monarch API (issue #53).
+///
+/// Steps:
+/// 1. Fetch a real transaction and record its original category id and name.
+/// 2. Pick a *different* real category from GetCategories to recategorize to.
+/// 3. Resolve the target category name → UUID via resolve_category_names.
+/// 4. Call update_transaction with the resolved UUID and verify it persisted.
+/// 5. Revert the transaction to its original category UUID and verify the
+///    revert persisted. Leaves live data clean.
+///
+/// This test exercises the full name→id resolution path (ADR 0010): the
+/// Rust client must send a UUID, not a name, as categoryId. It also proves
+/// that resolve_category_names produces an id that Monarch accepts.
+#[tokio::test]
+async fn apply_changeset_resolves_category_name_to_uuid_and_persists() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+
+    // 1. Fetch transactions and pick one to recategorize.
+    let transactions = client
+        .get_transactions(&cur_start, &cur_end, 10)
+        .await
+        .expect("GetTransactionsList must succeed against real Monarch");
+    assert!(
+        !transactions.is_empty(),
+        "need at least one transaction this month to test recategorization"
+    );
+    let txn = &transactions[0];
+    let txn_id = &txn.id;
+    let original_category_name = txn.category.name.clone();
+    eprintln!("target txn: id={txn_id} original_category={original_category_name:?}");
+
+    // 2. Fetch all categories and resolve the original category name → its UUID
+    //    so we can revert cleanly at the end.
+    let categories = client
+        .get_categories()
+        .await
+        .expect("GetCategories must succeed against real Monarch");
+    assert!(!categories.is_empty(), "must have at least one category");
+    eprintln!("categories available: {}", categories.len());
+
+    let original_cat = categories
+        .iter()
+        .find(|c| c.name == original_category_name)
+        .unwrap_or_else(|| panic!(
+            "original category {original_category_name:?} not found in GetCategories response"
+        ));
+    let original_uuid = original_cat.id.clone();
+    eprintln!("original category UUID: {original_uuid}");
+
+    // 3. Pick a different category to recategorize to (any category that is not
+    //    the current one, to guarantee an observable change).
+    let target_cat = categories
+        .iter()
+        .find(|c| c.id != original_uuid)
+        .expect("must have at least two categories to test recategorization");
+    let target_name = target_cat.name.clone();
+    let target_uuid = target_cat.id.clone();
+    eprintln!("recategorizing to: name={target_name:?} UUID={target_uuid}");
+
+    // 4. Exercise resolve_category_names: build an AppliedChange with the
+    //    *name* and resolve it to a UUID, then send the UUID to Monarch.
+    use monarch_mcp::triage::AppliedChange;
+    let applied_with_name = vec![AppliedChange {
+        id: txn_id.clone(),
+        category: Some(target_name.clone()),
+        tags: None,
+        notes: None,
+    }];
+    let (resolved, rejections) = resolve_category_names(&categories, applied_with_name);
+    assert!(
+        rejections.is_empty(),
+        "known category {target_name:?} must not produce a rejection; got: {rejections:?}"
+    );
+    assert_eq!(resolved.len(), 1, "exactly one resolved change expected");
+    let resolved_id = resolved[0]
+        .category
+        .as_deref()
+        .expect("resolved change must carry a category UUID");
+    assert_eq!(
+        resolved_id, target_uuid,
+        "resolve_category_names must map {target_name:?} → {target_uuid}"
+    );
+
+    // Send the resolved UUID to Monarch.
+    client
+        .update_transaction(txn_id, Some(resolved_id), None, None)
+        .await
+        .expect("update_transaction must succeed with resolved UUID");
+
+    // Verify the change persisted by re-fetching the transaction.
+    let after_apply = client
+        .get_transactions(&cur_start, &cur_end, 10)
+        .await
+        .expect("GetTransactionsList must succeed after recategorization");
+    let updated_txn = after_apply
+        .iter()
+        .find(|t| &t.id == txn_id)
+        .unwrap_or_else(|| panic!("transaction {txn_id} must still exist after recategorization"));
+    assert_eq!(
+        updated_txn.category.name, target_name,
+        "transaction {txn_id} must now show category {target_name:?}, \
+         got {:?}",
+        updated_txn.category.name
+    );
+    eprintln!("recategorization persisted: {} → {target_name:?}", original_category_name);
+
+    // 5. Revert to original category UUID (leave live data clean).
+    client
+        .update_transaction(txn_id, Some(&original_uuid), None, None)
+        .await
+        .expect("revert update_transaction must succeed");
+
+    let after_revert = client
+        .get_transactions(&cur_start, &cur_end, 10)
+        .await
+        .expect("GetTransactionsList must succeed after revert");
+    let reverted_txn = after_revert
+        .iter()
+        .find(|t| &t.id == txn_id)
+        .unwrap_or_else(|| panic!("transaction {txn_id} must still exist after revert"));
+    assert_eq!(
+        reverted_txn.category.name, original_category_name,
+        "transaction {txn_id} must revert to original category {original_category_name:?}, \
+         got {:?}",
+        reverted_txn.category.name
+    );
+    eprintln!("revert persisted: category restored to {original_category_name:?}");
 }
