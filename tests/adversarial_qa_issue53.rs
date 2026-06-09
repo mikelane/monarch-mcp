@@ -69,6 +69,14 @@ fn ambiguous_category_name_is_rejected_not_silently_misrouted() {
         "rejection reason must explain the ambiguity, got: {:?}",
         rejections[0].reason
     );
+    // Pin the exact distinct-UUID count so a mutant that miscounts (e.g. reports
+    // "1 matches" or drops the count) is caught here, not silently survived.
+    // Two same-name categories → exactly "2 matches".
+    assert!(
+        rejections[0].reason.contains("2 matches"),
+        "ambiguity reason must report the real distinct-UUID count (2), got: {:?}",
+        rejections[0].reason
+    );
 }
 
 // ---------------------------------------------------------------------------
