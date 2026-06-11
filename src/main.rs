@@ -22,6 +22,7 @@ mod inspect_transactions;
 mod net_worth_trend;
 mod progress_vs_goals;
 mod recurring_scan;
+mod retirement_readiness;
 mod savings_rate;
 mod spending_history;
 mod spending_report;

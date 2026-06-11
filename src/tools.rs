@@ -12,9 +12,14 @@ use crate::inspect_transactions::{blank_to_none, compute_inspection, InspectFilt
 use crate::net_worth_trend::compute_trend;
 use crate::progress_vs_goals::compute_progress;
 use crate::recurring_scan::compute_scan;
+use crate::retirement_readiness::{
+    compute_retirement_readiness, invested_financial_accounts, validate_withdrawal_rate,
+    WITHDRAWAL_RATE_DEFAULT,
+};
 use crate::savings_rate::{compute_savings_rate, SavingsRateResult};
 use crate::spending_history::{compute_spending_history, range_for_months_count, SpendingHistory};
 use crate::spending_report::compute_spending_report;
+use crate::spending_report::compute_true_spending;
 use crate::subscription_audit::compute_subscription_audit;
 use crate::triage::{
     build_category_suggestion_map, parse_raw_changes, partition_changeset, propose_changes,
@@ -71,6 +76,22 @@ pub struct SavingsRateParams {
     /// Explicit range end (ISO-8601 YYYY-MM-DD, e.g. "2026-04-30").
     /// Overrides `months` when provided.
     pub end_date: Option<String>,
+}
+
+/// Input parameters for the `retirement_readiness` tool.
+///
+/// All fields are optional. When omitted, defaults are applied:
+/// - `months`: 6 complete trailing months for the spend baseline
+/// - `withdrawal_rate`: 0.04 (4% rule)
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RetirementReadinessParams {
+    /// Number of complete calendar months of transaction history to use for
+    /// the annualised spend baseline (default 6, max 24).
+    pub months: Option<u32>,
+    /// Safe-withdrawal rate as a decimal fraction (default 0.04 = 4%).
+    /// Must be in [0.02, 0.10]. Out-of-range values are rejected with a
+    /// clear error message.
+    pub withdrawal_rate: Option<f64>,
 }
 
 /// Input parameters for the `apply_changeset` tool.
@@ -473,6 +494,49 @@ impl MonarchTools {
                 json!({
                     "error": "Session expired — re-authenticate by running `monarch-mcp login`"
                 })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
+        description = "Retirement-readiness snapshot: compares the investable portfolio \
+        against a safe-withdrawal-rate projection of the annualised spending baseline. \
+        Reports sustainable_annual_withdrawal, coverage_ratio (withdrawal / spend), \
+        target_portfolio (the 25x spend number at 4%), and surplus_or_gap. \
+        Invested assets = Equities-class accounts only (brokerage, 401k, Roth, HSA, \
+        stock plan) — real estate, cash, crypto, vehicles, and liabilities are excluded \
+        from the SWR base (ADR 0016). All assumptions (withdrawal rate, spend window, \
+        what counts as invested) are surfaced in the response so the numbers are \
+        self-interpreting.\n\n\
+        Params (all optional):\n\
+        - months: trailing complete months for the spend baseline (default 6, max 24)\n\
+        - withdrawal_rate: decimal fraction, default 0.04 (4% rule), range [0.02, 0.10]"
+    )]
+    async fn retirement_readiness(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+        Parameters(params): Parameters<RetirementReadinessParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_retirement_readiness(&client, params).await {
+            Ok(result) => serde_json::to_value(&result)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(MonarchError::InvalidInput(msg)) => {
+                json!({ "error": msg })
             }
             Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
         };
@@ -1042,6 +1106,49 @@ async fn fetch_and_compute_savings_rate(
     Ok(compute_savings_rate(&transactions, &start, &end))
 }
 
+async fn fetch_and_compute_retirement_readiness(
+    client: &MonarchClient,
+    params: RetirementReadinessParams,
+) -> Result<crate::retirement_readiness::RetirementReadiness, MonarchError> {
+    // Validate withdrawal rate before any network calls so invalid input fails fast.
+    let withdrawal_rate =
+        validate_withdrawal_rate(params.withdrawal_rate.unwrap_or(WITHDRAWAL_RATE_DEFAULT))
+            .map_err(MonarchError::InvalidInput)?;
+
+    // Resolve the trailing-months spend window (same clamping as savings_rate).
+    let today_day = today_epoch_day();
+    let n_months = params.months.unwrap_or(6).clamp(1, 24);
+    let (start, end) = range_for_months_count(today_day, n_months);
+
+    // Fetch accounts and transactions in parallel — they are independent.
+    let (accounts_result, transactions_result) = tokio::join!(
+        client.get_accounts(),
+        client.get_transactions(&start, &end, i32::MAX as u32),
+    );
+    let accounts = accounts_result?;
+    let transactions = transactions_result?;
+
+    // Invested assets = sum of Equities-class account balances (ADR 0016).
+    let invested_assets: f64 = invested_financial_accounts(&accounts)
+        .iter()
+        .map(|a| a.current_balance)
+        .sum();
+
+    // Annualise: (true_spending_over_window / n_months) * 12
+    let window_true_spending = compute_true_spending(&transactions);
+    // SAFETY: n_months is clamp(1, 24) at line 1120, so it is always >= 1.
+    // This division can never divide by zero. The clamp is the guard; no runtime
+    // branch is needed.
+    let annual_baseline_spend = (window_true_spending / f64::from(n_months)) * 12.0;
+
+    Ok(compute_retirement_readiness(
+        invested_assets,
+        annual_baseline_spend,
+        withdrawal_rate,
+        n_months,
+    ))
+}
+
 async fn fetch_and_compute_trend(
     client: &MonarchClient,
     months: u32,
@@ -1209,7 +1316,8 @@ impl ServerHandler for MonarchTools {
              spending_report, budget_review, spending_history, savings_rate, \
              triage_uncategorized, inspect_transactions, apply_changeset, \
              progress_vs_goals, cashflow_forecast, net_worth_trend, recurring_scan, \
-             subscription_audit, account_inventory, asset_allocation."
+             subscription_audit, account_inventory, asset_allocation, \
+             retirement_readiness."
                     .to_string(),
             )
     }

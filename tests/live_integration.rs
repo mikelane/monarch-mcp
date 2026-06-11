@@ -39,6 +39,10 @@ use monarch_mcp::financial_overview::compute_overview;
 use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
 use monarch_mcp::net_worth_trend::compute_trend;
 use monarch_mcp::recurring_scan::compute_scan;
+use monarch_mcp::retirement_readiness::{
+    compute_retirement_readiness, invested_financial_accounts, validate_withdrawal_rate,
+    WITHDRAWAL_RATE_DEFAULT,
+};
 use monarch_mcp::savings_rate::compute_savings_rate;
 use monarch_mcp::spending_history::{compute_spending_history, range_for_months_count};
 use monarch_mcp::spending_report::compute_spending_report;
@@ -1929,4 +1933,156 @@ async fn subscription_audit_returns_valid_structure_and_reconciles_with_recurrin
         "income exclusion confirmed: {} subscriptions, all outflows",
         audit.subscriptions.len()
     );
+}
+
+/// Verify that `retirement_readiness` produces structurally valid output from real
+/// Monarch data and that its two data inputs cross-check correctly:
+///
+/// 1. `invested_assets` = sum of Equities-class account balances via
+///    `invested_financial_accounts` — must equal `compute_asset_allocation`'s
+///    `equities` class total (same account slice, different filter).
+/// 2. `annual_baseline_spend` = annualised `compute_true_spending` over a 6-month
+///    window — positive, finite, and non-NaN.
+/// 3. `coverage_ratio` is present and finite when baseline spend > 0.
+/// 4. `withdrawal_rate_used` echoes the default 0.04.
+/// 5. `spend_window_months` is 6.
+///
+/// Does NOT assert specific dollar amounts — those change daily.
+#[tokio::test]
+async fn retirement_readiness_reconciles_with_asset_allocation_and_true_spending() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+
+    // --- date range: 6 trailing complete months ---
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today_days = (now / 86_400) as i64;
+    let (start, end) = range_for_months_count(today_days, 6);
+
+    eprintln!("retirement_readiness range: {start} — {end}");
+
+    // Fetch accounts and transactions (independent — same calls the handler makes).
+    let (accounts_result, transactions_result) = tokio::join!(
+        client.get_accounts(),
+        client.get_transactions(&start, &end, i32::MAX as u32),
+    );
+    let accounts = accounts_result.expect("GetAccounts must succeed");
+    let transactions = transactions_result.expect("GetTransactionsList must succeed");
+
+    eprintln!("accounts fetched: {}", accounts.len());
+    eprintln!("transactions fetched: {}", transactions.len());
+
+    // --- Trust cross-check 1: invested_assets agrees with asset_allocation ---
+    let invested = invested_financial_accounts(&accounts);
+    let invested_assets: f64 = invested.iter().map(|a| a.current_balance).sum();
+
+    let allocation = compute_asset_allocation(&accounts);
+    let alloc_equities_total = allocation
+        .classes
+        .get("equities")
+        .map(|c| c.total)
+        .unwrap_or(0.0);
+
+    eprintln!(
+        "invested_financial_accounts total: {invested_assets:.2} \
+         asset_allocation.equities.total: {alloc_equities_total:.2}"
+    );
+    assert!(
+        (invested_assets - alloc_equities_total).abs() < 0.01,
+        "invested_assets ({invested_assets:.2}) must equal asset_allocation.equities.total \
+         ({alloc_equities_total:.2}) — both sum the same Equities-class account balances"
+    );
+
+    // --- Trust cross-check 2: annual_baseline_spend is finite and non-negative ---
+    use monarch_mcp::spending_report::compute_true_spending;
+    let window_true_spending = compute_true_spending(&transactions);
+    let annual_baseline_spend = (window_true_spending / 6.0) * 12.0;
+
+    eprintln!("window_true_spending (6 months): {window_true_spending:.2}");
+    eprintln!("annual_baseline_spend (annualised): {annual_baseline_spend:.2}");
+
+    assert!(
+        annual_baseline_spend.is_finite(),
+        "annual_baseline_spend must be finite, got {annual_baseline_spend}"
+    );
+    assert!(
+        annual_baseline_spend >= 0.0,
+        "annual_baseline_spend must be non-negative, got {annual_baseline_spend}"
+    );
+
+    // --- validate_withdrawal_rate: default rate is always valid ---
+    assert!(
+        validate_withdrawal_rate(WITHDRAWAL_RATE_DEFAULT).is_ok(),
+        "default withdrawal rate must pass validation"
+    );
+
+    // --- compute_retirement_readiness: structural validity ---
+    let rr = compute_retirement_readiness(invested_assets, annual_baseline_spend, 0.04, 6);
+
+    assert!(
+        (rr.withdrawal_rate_used - 0.04).abs() < 1e-9,
+        "withdrawal_rate_used must echo 0.04, got {}",
+        rr.withdrawal_rate_used
+    );
+    assert_eq!(rr.spend_window_months, 6, "spend_window_months must be 6");
+    assert!(
+        (rr.invested_assets - invested_assets).abs() < 0.01,
+        "RetirementReadiness.invested_assets must match the pre-computed value"
+    );
+    assert!(
+        rr.sustainable_annual_withdrawal.is_finite(),
+        "sustainable_annual_withdrawal must be finite"
+    );
+    assert!(
+        rr.sustainable_annual_withdrawal >= 0.0,
+        "sustainable_annual_withdrawal must be non-negative"
+    );
+
+    // coverage_ratio is present iff baseline spend > 0
+    if annual_baseline_spend > 0.0 {
+        let ratio = rr
+            .coverage_ratio
+            .expect("coverage_ratio must be Some when annual_baseline_spend > 0");
+        assert!(
+            ratio.is_finite(),
+            "coverage_ratio must be finite, got {ratio}"
+        );
+        assert!(
+            ratio >= 0.0,
+            "coverage_ratio must be non-negative, got {ratio}"
+        );
+
+        let target = rr
+            .target_portfolio
+            .expect("target_portfolio must be Some when annual_baseline_spend > 0");
+        assert!(
+            target.is_finite() && target > 0.0,
+            "target_portfolio must be positive finite, got {target}"
+        );
+
+        let gap = rr
+            .surplus_or_gap
+            .expect("surplus_or_gap must be Some when annual_baseline_spend > 0");
+        assert!(gap.is_finite(), "surplus_or_gap must be finite, got {gap}");
+
+        eprintln!(
+            "retirement_readiness: invested={invested_assets:.2} \
+             annual_spend={annual_baseline_spend:.2} \
+             sustainable={:.2} coverage={ratio:.3} target={target:.2} gap={gap:.2}",
+            rr.sustainable_annual_withdrawal,
+        );
+    } else {
+        // Zero spend — coverage_ratio must be None (no ÷0)
+        assert!(
+            rr.coverage_ratio.is_none(),
+            "coverage_ratio must be None when annual_baseline_spend is 0"
+        );
+        eprintln!("retirement_readiness: zero spend window — coverage_ratio=None as expected");
+    }
 }
