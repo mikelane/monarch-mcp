@@ -11,6 +11,7 @@
 //!   MONARCH_GOALS_FILE   — path to the TOML goals file for progress_vs_goals
 
 mod account_inventory;
+mod asset_allocation;
 mod budget_review;
 mod cashflow_forecast;
 mod client;

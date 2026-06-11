@@ -5,6 +5,7 @@
 //! duplicating the module graph.
 
 pub mod account_inventory;
+pub mod asset_allocation;
 pub mod budget_review;
 pub mod cashflow_forecast;
 pub mod client;

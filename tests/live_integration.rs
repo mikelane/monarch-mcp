@@ -32,6 +32,7 @@
 //! | Large  | `tests/live_integration.rs`    | `MONARCH_LIVE=1 cargo test --test live_integration` | `MONARCH_LIVE=1` |
 
 use monarch_mcp::account_inventory::compute_account_inventory;
+use monarch_mcp::asset_allocation::compute_asset_allocation;
 use monarch_mcp::budget_review::compute_budget_review;
 use monarch_mcp::client::MonarchClient;
 use monarch_mcp::financial_overview::compute_overview;
@@ -986,6 +987,173 @@ async fn account_inventory_returns_valid_structure() {
     eprintln!("accounts with unknown_subtype: {unknown_count}");
     // Non-fatal: warn only. A strict assert here would break if Monarch adds a
     // new subtype before we can update ADR 0009 and the bucket map.
+}
+
+/// Verify that `asset_allocation` produces structurally valid output from real
+/// Monarch data (issue #67) and that its `net_worth` agrees with
+/// `financial_overview`'s net worth (the trust cross-check).
+///
+/// Asserts:
+/// 1. GetAccounts succeeds and returns at least one account.
+/// 2. `compute_asset_allocation` produces finite, non-NaN class totals and
+///    rollup values.
+/// 3. `gross_assets` is non-negative (sum of positive-balance class totals).
+/// 4. `total_liabilities` is ≤ 0 (signed sum of liability-class balances).
+/// 5. Per-class percentages sum to ~100% of gross_assets (within 0.1%).
+/// 6. `net_worth` matches `financial_overview`'s net worth (same account slice,
+///    different aggregation path — cross-check per ADR 0014).
+/// 7. No class has an infinite or NaN total.
+///
+/// Does NOT assert specific dollar amounts — those change daily.
+#[tokio::test]
+async fn asset_allocation_returns_valid_structure_and_agrees_with_financial_overview() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+    let (pri_start, pri_end) = prior_month();
+
+    // Fetch accounts (shared data source for both tools).
+    let accounts = client
+        .get_accounts()
+        .await
+        .expect("GetAccounts must succeed against real Monarch");
+
+    assert!(!accounts.is_empty(), "must have at least one account");
+    eprintln!("accounts returned: {}", accounts.len());
+
+    // --- asset_allocation path ---
+    let allocation = compute_asset_allocation(&accounts);
+
+    eprintln!("gross_assets:       {:.2}", allocation.gross_assets);
+    eprintln!("total_liabilities:  {:.2}", allocation.total_liabilities);
+    eprintln!("net_worth:          {:.2}", allocation.net_worth);
+    eprintln!(
+        "classes:            {:?}",
+        allocation.classes.keys().collect::<Vec<_>>()
+    );
+
+    // Every class total must be finite and not NaN.
+    for (class_name, summary) in &allocation.classes {
+        assert!(
+            summary.total.is_finite(),
+            "class {class_name:?} total must be finite, got {}",
+            summary.total
+        );
+        if let Some(pct) = summary.percent_of_assets {
+            assert!(
+                pct.is_finite() && pct >= 0.0,
+                "class {class_name:?} percent_of_assets must be finite and non-negative, got {pct}"
+            );
+        }
+        eprintln!(
+            "  {class_name}: total={:.2} pct={:?} recognized={}",
+            summary.total, summary.percent_of_assets, summary.recognized
+        );
+        if !summary.recognized {
+            eprintln!(
+                "  WARNING: class {class_name:?} contains an unrecognized account type/subtype — \
+                 check ADR 0009/0014 for vocabulary updates"
+            );
+        }
+    }
+
+    // gross_assets must be non-negative (it is the sum of positive-balance classes).
+    assert!(
+        allocation.gross_assets >= 0.0,
+        "gross_assets must be non-negative, got {}",
+        allocation.gross_assets
+    );
+    assert!(
+        allocation.gross_assets.is_finite(),
+        "gross_assets must be finite, got {}",
+        allocation.gross_assets
+    );
+
+    // total_liabilities must be ≤ 0 (signed sum of outflow/debt balances).
+    assert!(
+        allocation.total_liabilities <= 0.0,
+        "total_liabilities must be ≤ 0 (signed sum of liability balances), got {}",
+        allocation.total_liabilities
+    );
+    assert!(
+        allocation.total_liabilities.is_finite(),
+        "total_liabilities must be finite, got {}",
+        allocation.total_liabilities
+    );
+
+    // net_worth must be finite (could be negative if liabilities exceed assets).
+    assert!(
+        allocation.net_worth.is_finite(),
+        "net_worth must be finite — NaN/inf indicates a GraphQL schema mismatch, got {}",
+        allocation.net_worth
+    );
+
+    // Per-class percentages (excluding liabilities, which have None) must sum to ~100%.
+    if allocation.gross_assets > 0.0 {
+        let pct_sum: f64 = allocation
+            .classes
+            .values()
+            .filter_map(|s| s.percent_of_assets)
+            .sum();
+        assert!(
+            (pct_sum - 100.0).abs() < 0.1,
+            "per-class percent_of_assets must sum to ~100% when gross_assets > 0, got {pct_sum:.4}%"
+        );
+        eprintln!("percent_of_assets sum: {pct_sum:.4}% (expected ~100%)");
+    }
+
+    // Independent net_worth cross-check: compute from raw signed account balances
+    // and assert asset_allocation's net_worth matches (same account slice, different path).
+    let raw_net_worth: f64 = accounts.iter().map(|a| a.current_balance).sum();
+    assert!(
+        (allocation.net_worth - raw_net_worth).abs() < 0.01,
+        "asset_allocation net_worth ({:.2}) must equal raw signed sum of account balances ({:.2})",
+        allocation.net_worth,
+        raw_net_worth
+    );
+    eprintln!(
+        "net_worth cross-check: asset_allocation={:.2} raw_sum={:.2} ✓",
+        allocation.net_worth, raw_net_worth
+    );
+
+    // --- financial_overview path (trust cross-check per ADR 0014) ---
+    let cashflow = client
+        .get_cashflow(&cur_start, &cur_end, &pri_start, &pri_end)
+        .await
+        .expect("Web_GetCashFlowPage must succeed against real Monarch");
+
+    let history = client
+        .get_net_worth_history(&pri_start, &pri_end)
+        .await
+        .expect("GetAggregateSnapshots must succeed against real Monarch");
+
+    let transactions = client
+        .get_transactions(&cur_start, &cur_end, 500)
+        .await
+        .expect("GetTransactionsList must succeed against real Monarch");
+
+    let overview = compute_overview(&accounts, &cashflow, &transactions, &history);
+
+    eprintln!("financial_overview.net_worth: {:.2}", overview.net_worth);
+    eprintln!("asset_allocation.net_worth:   {:.2}", allocation.net_worth);
+
+    // Both tools use the same GetAccounts slice — their net_worth must agree within
+    // floating-point tolerance (ADR 0014 trust cross-check).
+    assert!(
+        (allocation.net_worth - overview.net_worth).abs() < 0.01,
+        "asset_allocation net_worth ({:.2}) must equal financial_overview net_worth ({:.2}) — \
+         both compute from the same GetAccounts slice (ADR 0014 trust cross-check)",
+        allocation.net_worth,
+        overview.net_worth
+    );
+    eprintln!(
+        "financial_overview cross-check: asset_allocation={:.2} financial_overview={:.2} ✓",
+        allocation.net_worth, overview.net_worth
+    );
 }
 
 /// Verify that apply_changeset resolves category names to UUIDs end-to-end
