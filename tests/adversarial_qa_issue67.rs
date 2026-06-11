@@ -1,13 +1,15 @@
 //! Adversarial QA (Gate 3 penetration test) for issue #67 `asset_allocation`.
 //!
-//! These tests demonstrate confirmed bugs found during adversarial review.
-//! They are `#[ignore]`d so they do not break the green suite; each fails when
-//! run explicitly, proving the bug.
+//! These tests pin the bugs found during adversarial review — the
+//! `net_worth` divergence when an asset class is net-negative (overdrawn
+//! checking, brokerage margin). The bugs are now fixed (`net_worth` is the
+//! signed sum of all account balances, `src/asset_allocation.rs`), so these
+//! tests pass and serve as regression guards against a reintroduction.
 //!
 //! # How to run
 //!
 //! ```bash
-//! cargo test --test adversarial_qa_issue67 -- --ignored --nocapture
+//! cargo test --test adversarial_qa_issue67 -- --nocapture
 //! ```
 //!
 //! Run a single one:
@@ -15,7 +17,7 @@
 //! ```bash
 //! cargo test --test adversarial_qa_issue67 \
 //!   net_worth_diverges_from_financial_overview_with_overdrawn_checking \
-//!   -- --ignored --nocapture
+//!   -- --nocapture
 //! ```
 
 use monarch_mcp::asset_allocation::compute_asset_allocation;
