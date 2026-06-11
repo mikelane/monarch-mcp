@@ -48,6 +48,7 @@ def step_assert_reauth_required(context):
         or getattr(context, "inventory_result", None)
         or getattr(context, "budget_review_result", None)
         or getattr(context, "allocation_result", None)
+        or getattr(context, "rr_result", None)
     )
     assert result is not None, (
         "No tool result found — make sure the When step ran before this Then step."
