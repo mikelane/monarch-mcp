@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/mikelane/monarch-mcp/compare/v0.4.0...v0.4.1) - 2026-06-11
+
+### Documentation
+
+- remove duplicate account_inventory entry from CHANGELOG [0.4.0] ([#61](https://github.com/mikelane/monarch-mcp/pull/61))
+
+### Fixed
+
+- deterministic spending_history outliers + date-helper and subtract_months cleanups ([#63](https://github.com/mikelane/monarch-mcp/pull/63))
+
 ## [0.4.0](https://github.com/mikelane/monarch-mcp/compare/v0.3.0...v0.4.0) - 2026-06-09
 
 ### Added
