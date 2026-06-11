@@ -30,7 +30,7 @@ def _post_fixtures(context) -> None:
 
 
 @given('a "{category}" budget of {amount:d} dollars')
-def step_add_budget(context, category: str, amount: int) -> None:
+def step_add_budget(context, category: str, amount: int):
     """Add an expense budget entry (negative amount per Monarch sign convention)."""
     budgets = getattr(context, "_budgets", [])
     budgets.append(
@@ -45,7 +45,7 @@ def step_add_budget(context, category: str, amount: int) -> None:
 
 
 @given('{amount:d} dollars spent on "{category}" so far this month')
-def step_add_expense_spend(context, amount: int, category: str) -> None:
+def step_add_expense_spend(context, amount: int, category: str):
     """Add a negative-amount expense transaction for the pinned current month."""
     txns = getattr(context, "_transactions", [])
     txns.append(
@@ -63,7 +63,7 @@ def step_add_expense_spend(context, amount: int, category: str) -> None:
 
 
 @given('an income transaction of {amount:d} dollars in category "{category}"')
-def step_add_income_transaction(context, amount: int, category: str) -> None:
+def step_add_income_transaction(context, amount: int, category: str):
     """Add an income transaction — must NOT contribute to spending or pacing."""
     txns = getattr(context, "_transactions", [])
     txns.append(
@@ -80,7 +80,7 @@ def step_add_income_transaction(context, amount: int, category: str) -> None:
 
 
 @given('a transfer transaction of {amount:d} dollars in category "{category}"')
-def step_add_transfer_transaction(context, amount: int, category: str) -> None:
+def step_add_transfer_transaction(context, amount: int, category: str):
     """Add a transfer transaction — must NOT contribute to spending or pacing."""
     txns = getattr(context, "_transactions", [])
     txns.append(
@@ -102,7 +102,7 @@ def step_add_transfer_transaction(context, amount: int, category: str) -> None:
 
 
 @when("the advisor requests budget_review")
-def step_request_budget_review(context) -> None:
+def step_request_budget_review(context):
     context.budget_review_result = call_tool(context, "budget_review", {})
 
 
@@ -142,7 +142,7 @@ def _get_rollup(context) -> dict:
 @then('"{category}" shows budget {budget:f} and spent {spent:f}')
 def step_assert_budget_and_spent(
     context, category: str, budget: float, spent: float
-) -> None:
+):
     cat = _get_category(context, category)
     actual_budget = cat.get("budget")
     actual_spent = cat.get("spent")
@@ -155,7 +155,7 @@ def step_assert_budget_and_spent(
 
 
 @then('"{category}" remaining is {remaining:f}')
-def step_assert_remaining(context, category: str, remaining: float) -> None:
+def step_assert_remaining(context, category: str, remaining: float):
     cat = _get_category(context, category)
     actual = cat.get("remaining")
     assert abs(actual - remaining) < 0.001, (
@@ -164,7 +164,7 @@ def step_assert_remaining(context, category: str, remaining: float) -> None:
 
 
 @then('"{category}" pace_status is "{status}"')
-def step_assert_pace_status(context, category: str, status: str) -> None:
+def step_assert_pace_status(context, category: str, status: str):
     cat = _get_category(context, category)
     actual = cat.get("pace_status")
     assert actual == status, (
@@ -173,7 +173,7 @@ def step_assert_pace_status(context, category: str, status: str) -> None:
 
 
 @then('"{category}" does not appear in the pacing list')
-def step_assert_category_absent(context, category: str) -> None:
+def step_assert_category_absent(context, category: str):
     result = context.budget_review_result
     by_category = result.get("by_category", {})
     assert category not in by_category, (
@@ -183,7 +183,7 @@ def step_assert_category_absent(context, category: str) -> None:
 
 
 @then('"{category}" appears in the pacing list')
-def step_assert_category_present(context, category: str) -> None:
+def step_assert_category_present(context, category: str):
     result = context.budget_review_result
     by_category = result.get("by_category", {})
     assert category in by_category, (
@@ -198,7 +198,7 @@ def step_assert_category_present(context, category: str) -> None:
 
 
 @then("the rollup shows at least {count:d} over category")
-def step_assert_rollup_over(context, count: int) -> None:
+def step_assert_rollup_over(context, count: int):
     rollup = _get_rollup(context)
     actual = rollup.get("over_count", 0)
     assert actual >= count, (
@@ -207,7 +207,7 @@ def step_assert_rollup_over(context, count: int) -> None:
 
 
 @then("the rollup shows at least {count:d} on_track category")
-def step_assert_rollup_on_track(context, count: int) -> None:
+def step_assert_rollup_on_track(context, count: int):
     rollup = _get_rollup(context)
     actual = rollup.get("on_track_count", 0)
     assert actual >= count, (
@@ -221,7 +221,7 @@ def step_assert_rollup_on_track(context, count: int) -> None:
 
 
 @then("the budget_review response does not contain raw transactions")
-def step_assert_no_raw_transactions(context) -> None:
+def step_assert_no_raw_transactions(context):
     result = context.budget_review_result
     assert "transactions" not in result, (
         f"Response must not contain a raw 'transactions' key. "

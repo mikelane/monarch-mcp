@@ -696,6 +696,63 @@ mod tests {
         assert_eq!(cat.percent_spent, None);
     }
 
+    #[test]
+    fn zero_budget_with_no_spend_is_under_and_finite() {
+        // Category with zero budget and no spending should pace as Under (spent 0 < budget 0).
+        // See classify_pace: budget_mag == 0.0 && spent == 0.0 → Under.
+        let budgets = vec![make_expense_budget("Misc", 0.0)];
+        let result = compute_budget_review(&budgets, &[], 15, 30);
+        let cat = result.by_category.get("Misc").unwrap();
+        assert_eq!(
+            cat.pace_status,
+            PaceStatus::Under,
+            "zero budget with no spend should be Under: {cat:?}"
+        );
+        assert_eq!(cat.remaining, 0.0);
+        assert!(cat.remaining.is_finite(), "remaining should be finite");
+    }
+
+    #[test]
+    fn zero_budget_with_spend_is_over_budget_and_finite() {
+        // Category with zero budget but any spending (e.g., -25.0 expense) should be OverBudget.
+        // See classify_pace: budget_mag == 0.0 && spent > 0.0 → OverBudget.
+        let budgets = vec![make_expense_budget("Misc", 0.0)];
+        let txns = vec![make_expense_txn("Misc Co", -25.0, "Misc")];
+        let result = compute_budget_review(&budgets, &txns, 15, 30);
+        let cat = result.by_category.get("Misc").unwrap();
+        assert_eq!(
+            cat.pace_status,
+            PaceStatus::OverBudget,
+            "zero budget with any spend should be OverBudget: {cat:?}"
+        );
+        assert_eq!(
+            cat.percent_spent, None,
+            "percent_spent must be None for zero budget"
+        );
+        assert_eq!(cat.spent, 25.0);
+        assert_eq!(cat.remaining, -25.0);
+        assert!(cat.remaining.is_finite(), "remaining should be finite");
+    }
+
+    #[test]
+    fn zero_budget_with_spend_counts_as_over_budget_in_rollup() {
+        // A zero-budget category with spending should increment over_budget_count in rollup.
+        let budgets = vec![make_expense_budget("Misc", 0.0)];
+        let txns = vec![make_expense_txn("Misc Co", -25.0, "Misc")];
+        let result = compute_budget_review(&budgets, &txns, 15, 30);
+        let rollup = &result.rollup;
+        assert_eq!(
+            rollup.over_budget_count, 1,
+            "zero budget with spend should count in over_budget_count: {rollup:?}"
+        );
+        assert_eq!(
+            rollup.on_track_count, 0,
+            "on_track_count should be 0: {rollup:?}"
+        );
+        assert_eq!(rollup.over_count, 0, "over_count should be 0: {rollup:?}");
+        assert_eq!(rollup.under_count, 0, "under_count should be 0: {rollup:?}");
+    }
+
     // -----------------------------------------------------------------------
     // Rollup counts
     // -----------------------------------------------------------------------
