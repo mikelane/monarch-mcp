@@ -328,13 +328,18 @@ fn find_outliers(transactions: &[&Transaction]) -> Vec<SpendingOutlier> {
         }
     }
 
-    // Sort for deterministic output: by category, then by date, then by amount desc
+    // Sort for deterministic output: by category, then by date, then by amount desc,
+    // then by merchant name as the final stable tiebreaker.
     outliers.sort_by(|a, b| {
-        a.category.cmp(&b.category).then(a.date.cmp(&b.date)).then(
-            b.amount
-                .partial_cmp(&a.amount)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        )
+        a.category
+            .cmp(&b.category)
+            .then(a.date.cmp(&b.date))
+            .then(
+                b.amount
+                    .partial_cmp(&a.amount)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.merchant.cmp(&b.merchant))
     });
     outliers
 }
@@ -980,6 +985,47 @@ mod tests {
         assert!(
             labels.is_empty(),
             "Expected empty vec for non-ASCII end, got: {labels:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Outlier sort determinism — tiebreaker on merchant_name (and then id)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn outlier_sort_is_deterministic_when_category_date_amount_are_equal() {
+        // Two outlier-eligible transactions with IDENTICAL (category, date, amount)
+        // but DIFFERENT merchant_name.  Without a tiebreaker the output order is
+        // non-deterministic; with merchant_name as the tiebreaker it must always
+        // come out alphabetically (Alpha before Zeta).
+        //
+        // Three small normal transactions anchor the per-transaction average at ~$5.
+        // When computing the outlier threshold for each $900 candidate, the
+        // average-of-others = ($900 + $5 + $5 + $5) / 4 = $228.75, so the
+        // threshold is 3 × $228.75 = $686.25, which $900 clears.
+        let txns = vec![
+            make_expense_txn("Alpha Merchant", -900.0, "Dining", "2026-03-15"),
+            make_expense_txn("Zeta Merchant", -900.0, "Dining", "2026-03-15"),
+            make_expense_txn("Tiny Bite A", -5.0, "Dining", "2026-03-01"),
+            make_expense_txn("Tiny Bite B", -5.0, "Dining", "2026-03-02"),
+            make_expense_txn("Tiny Bite C", -5.0, "Dining", "2026-03-03"),
+        ];
+        let history = compute_spending_history(&txns, "2026-03-01", "2026-03-31");
+        let outliers = &history.months[0].outliers;
+        // Both large transactions must be flagged (900 >> 10, factor = 3× threshold)
+        assert_eq!(
+            outliers.len(),
+            2,
+            "Both identical-amount transactions should be outliers; got: {outliers:?}"
+        );
+        // Deterministic order: merchant_name ascending ("Alpha" < "Zeta")
+        assert_eq!(
+            outliers[0].merchant, "Alpha Merchant",
+            "First outlier should be Alpha Merchant (alphabetically first); got: {outliers:?}"
+        );
+        assert_eq!(
+            outliers[1].merchant, "Zeta Merchant",
+            "Second outlier should be Zeta Merchant; got: {outliers:?}"
         );
     }
 
