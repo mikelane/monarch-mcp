@@ -10,6 +10,7 @@ use crate::inspect_transactions::{blank_to_none, compute_inspection, InspectFilt
 use crate::net_worth_trend::compute_trend;
 use crate::progress_vs_goals::compute_progress;
 use crate::recurring_scan::compute_scan;
+use crate::savings_rate::{compute_savings_rate, SavingsRateResult};
 use crate::spending_history::{compute_spending_history, range_for_months_count, SpendingHistory};
 use crate::spending_report::compute_spending_report;
 use crate::triage::{
@@ -40,6 +41,24 @@ pub struct NetWorthTrendParams {
 /// When neither is supplied, defaults to 6 complete months.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SpendingHistoryParams {
+    /// Number of complete calendar months to include, ending before the
+    /// current (partial) month. Defaults to 6 when omitted.
+    pub months: Option<u32>,
+    /// Explicit range start (ISO-8601 YYYY-MM-DD, e.g. "2025-11-01").
+    /// Overrides `months` when provided.
+    pub start_date: Option<String>,
+    /// Explicit range end (ISO-8601 YYYY-MM-DD, e.g. "2026-04-30").
+    /// Overrides `months` when provided.
+    pub end_date: Option<String>,
+}
+
+/// Input parameters for the `savings_rate` tool.
+///
+/// Provide either `months` (last N complete months) or explicit
+/// `start_date` / `end_date`. When both are supplied, explicit dates win.
+/// When neither is supplied, defaults to 6 complete months.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SavingsRateParams {
     /// Number of complete calendar months to include, ending before the
     /// current (partial) month. Defaults to 6 when omitted.
     pub months: Option<u32>,
@@ -432,6 +451,46 @@ impl MonarchTools {
     }
 
     #[tool(
+        description = "Compute monthly income, true spending, net savings, and savings rate \
+        over a multi-month range (default: last 6 complete months). Returns compact \
+        per-month aggregates — never raw transactions. Income = positive income-group \
+        transactions; true spending uses the same exclusion rules as spending_history \
+        (transfers and credit-card payments excluded). A per-month savings rate and a \
+        window-average rate are included; months with zero income omit the rate field.\n\n\
+        Params (all optional):\n\
+        - months: last N complete months (default 6, max 24)\n\
+        - start_date / end_date: explicit ISO-8601 range (overrides months)"
+    )]
+    async fn savings_rate(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+        Parameters(params): Parameters<SavingsRateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_savings_rate(&client, params).await {
+            Ok(result) => serde_json::to_value(&result)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(MonarchError::InvalidInput(msg)) => {
+                json!({ "error": msg })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
         description = "Measure actual finances against the household's remembered goals \
         (savings rate, emergency-fund runway, debt payoff). Reports each goal as \
         on-track, drifting, or off, with the lever to pull."
@@ -784,6 +843,28 @@ async fn fetch_and_compute_inventory(
     Ok(compute_account_inventory(&accounts))
 }
 
+async fn fetch_and_compute_savings_rate(
+    client: &MonarchClient,
+    params: SavingsRateParams,
+) -> Result<SavingsRateResult, MonarchError> {
+    let today_day = today_epoch_day();
+
+    // Reuse the same range-resolution logic as spending_history so the two
+    // tools always cover identical month windows when called with the same params.
+    let (start, end) =
+        resolve_history_range(today_day, params.months, params.start_date, params.end_date)
+            .map_err(MonarchError::InvalidInput)?;
+
+    // Fetch transactions only — income is derived from the same GetTransactionsList
+    // call that spending_history uses, so savings_rate.true_spending always agrees
+    // with spending_history.total_true_spending for the same range (ADR 0012).
+    let transactions = client
+        .get_transactions(&start, &end, i32::MAX as u32)
+        .await?;
+
+    Ok(compute_savings_rate(&transactions, &start, &end))
+}
+
 async fn fetch_and_compute_trend(
     client: &MonarchClient,
     months: u32,
@@ -948,8 +1029,8 @@ impl ServerHandler for MonarchTools {
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
                 "Monarch Money budgeting advisor. Tools: financial_overview, \
-             spending_report, spending_history, triage_uncategorized, inspect_transactions, \
-             apply_changeset, progress_vs_goals, \
+             spending_report, spending_history, savings_rate, triage_uncategorized, \
+             inspect_transactions, apply_changeset, progress_vs_goals, \
              cashflow_forecast, net_worth_trend, recurring_scan, account_inventory."
                     .to_string(),
             )

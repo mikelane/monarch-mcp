@@ -14,6 +14,7 @@ pub mod inspect_transactions;
 pub mod net_worth_trend;
 pub mod progress_vs_goals;
 pub mod recurring_scan;
+pub mod savings_rate;
 pub mod spending_history;
 pub mod spending_report;
 pub mod tools;
