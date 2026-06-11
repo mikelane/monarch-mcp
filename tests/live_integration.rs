@@ -1413,7 +1413,8 @@ async fn budget_review_returns_valid_structure_from_real_monarch() {
     let review = compute_budget_review(&budgets, &transactions, today_dom, dim);
 
     eprintln!("by_category entries: {}", review.by_category.len());
-    eprintln!("rollup: over={} on_track={} under={} over_budget={}",
+    eprintln!(
+        "rollup: over={} on_track={} under={} over_budget={}",
         review.rollup.over_count,
         review.rollup.on_track_count,
         review.rollup.under_count,
@@ -1425,24 +1426,28 @@ async fn budget_review_returns_valid_structure_from_real_monarch() {
         assert!(
             pacing.budget.is_finite(),
             "budget must be finite for category {:?}, got {}",
-            name, pacing.budget
+            name,
+            pacing.budget
         );
         assert!(
             pacing.spent.is_finite(),
             "spent must be finite for category {:?}, got {}",
-            name, pacing.spent
+            name,
+            pacing.spent
         );
         assert!(
             pacing.remaining.is_finite(),
             "remaining must be finite for category {:?}, got {}",
-            name, pacing.remaining
+            name,
+            pacing.remaining
         );
         // percent_spent is None when budget == 0; otherwise it is a whole-number percentage.
         if let Some(pct) = pacing.percent_spent {
             assert!(
                 pct >= 0,
                 "percent_spent must be non-negative for category {:?}, got {}",
-                name, pct
+                name,
+                pct
             );
         }
 
@@ -1450,25 +1455,34 @@ async fn budget_review_returns_valid_structure_from_real_monarch() {
         assert!(
             (pacing.remaining - (pacing.budget - pacing.spent)).abs() < 0.01,
             "remaining ({:.2}) must equal budget ({:.2}) - spent ({:.2}) for {:?}",
-            pacing.remaining, pacing.budget, pacing.spent, name
+            pacing.remaining,
+            pacing.budget,
+            pacing.spent,
+            name
         );
 
         // spent and budget must be non-negative (magnitudes).
         assert!(
             pacing.spent >= 0.0,
             "spent must be non-negative for category {:?}, got {}",
-            name, pacing.spent
+            name,
+            pacing.spent
         );
         assert!(
             pacing.budget >= 0.0,
             "budget must be non-negative for category {:?}, got {}",
-            name, pacing.budget
+            name,
+            pacing.budget
         );
 
         eprintln!(
             "  {:?}: budget={:.2} spent={:.2} remaining={:.2} pct={:?}% status={:?}",
-            name, pacing.budget, pacing.spent, pacing.remaining,
-            pacing.percent_spent, pacing.pace_status
+            name,
+            pacing.budget,
+            pacing.spent,
+            pacing.remaining,
+            pacing.percent_spent,
+            pacing.pace_status
         );
     }
 
