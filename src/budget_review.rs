@@ -183,13 +183,7 @@ fn build_category_pacings(
             let spent = *spending.get(&b.category.name).unwrap_or(&0.0);
             let remaining = budget_mag - spent;
             let percent_spent = compute_percent_spent(spent, budget_mag);
-            let pace_status = classify_pace(
-                spent,
-                budget_mag,
-                percent_spent,
-                today_day_of_month,
-                days_in_month,
-            );
+            let pace_status = classify_pace(spent, budget_mag, today_day_of_month, days_in_month);
 
             Some((
                 b.category.name.clone(),
@@ -226,13 +220,18 @@ fn compute_percent_spent(spent: f64, budget_mag: f64) -> Option<i64> {
 /// `pace_fraction_pct` = `(today_day_of_month / days_in_month) * 100`.
 /// On day 1 of 30 this is 3.33%; on day 15 of 30 it is 50%; on day 30 it is 100%.
 ///
+/// Note: The band comparison (Over/Under/OnTrack classification) is computed
+/// using the RAW f64 ratio `(spent / budget) * 100`, NOT the rounded i64 value.
+/// The rounded `percent_spent` field is used only for display. This ensures
+/// classification matches ADR 0013, which defines the tolerance band on the
+/// raw ratio.
+///
 /// For zero-budget categories `percent_spent` is `None`; the category is
 /// classified `OverBudget` if any spend exists (matches `spending_report`
 /// over-budget logic for zero-budget), `Under` if no spend.
 fn classify_pace(
     spent: f64,
     budget_mag: f64,
-    percent_spent: Option<i64>,
     today_day_of_month: u32,
     days_in_month: u32,
 ) -> PaceStatus {
@@ -249,10 +248,9 @@ fn classify_pace(
         };
     }
 
-    let percent_f = match percent_spent {
-        Some(p) => p as f64,
-        None => return PaceStatus::Under, // defensive; budget_mag > 0 already handled
-    };
+    // Compute the raw ratio for band comparison (NOT the rounded display percent).
+    // This ensures classification matches ADR 0013.
+    let percent_f = (spent / budget_mag) * 100.0;
 
     let pace_pct = (today_day_of_month as f64 / days_in_month as f64) * 100.0;
 
