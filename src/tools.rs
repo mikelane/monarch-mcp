@@ -492,6 +492,13 @@ fn civil_to_epoch_day(year: i64, month: i64, day: i64) -> i64 {
 
 /// Parse an ISO `YYYY-MM-DD` date string to days since the Unix epoch.
 ///
+/// **Canonical production parser** — the sole authoritative implementation
+/// for converting user-supplied or API date strings to epoch days.
+/// `spending_history.rs` has a parallel `#[cfg(test)]`-only helper
+/// (`parse_date_for_test`) that serves the same math for its unit tests
+/// without creating a cross-module import; both implement the same
+/// Howard Hinnant algorithm.
+///
 /// Returns `None` for non-three-part or non-numeric inputs so callers can
 /// fall back gracefully instead of silently using a wrong date.
 fn parse_iso_date_to_epoch_day(s: &str) -> Option<i64> {

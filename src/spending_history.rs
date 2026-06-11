@@ -187,9 +187,13 @@ fn days_in_month(year: i64, month: u32) -> u32 {
 
 /// Convert an ISO `YYYY-MM-DD` date string to Unix epoch days.
 ///
-/// Returns `None` for unparseable inputs; callers fall back gracefully.
+/// **Test-only helper** — used to construct epoch-day inputs for unit tests
+/// inside this module without reaching into `tools.rs`.  The canonical
+/// production parser is `parse_iso_date_to_epoch_day` in `tools.rs`; both
+/// implement the same Howard Hinnant algorithm but are kept local to avoid a
+/// circular module dependency.
 #[cfg(test)]
-fn parse_iso_to_epoch_day(s: &str) -> Option<i64> {
+fn parse_date_for_test(s: &str) -> Option<i64> {
     let mut parts = s.splitn(3, '-');
     let year: i64 = parts.next()?.parse().ok()?;
     let month: i64 = parts.next()?.parse().ok()?;
@@ -228,18 +232,16 @@ fn month_bucket(date: &str) -> Option<String> {
 }
 
 /// Subtract `n` months from `(year, month)`, returning the new `(year, month)`.
+///
+/// Uses O(1) modular arithmetic: convert to a 0-based total-months index,
+/// subtract, then convert back.  Months are 1-based (1..=12).
 fn subtract_months(year: i64, month: u32, n: u32) -> (i64, u32) {
-    let mut y = year;
-    let mut m = month;
-    for _ in 0..n {
-        if m == 1 {
-            y -= 1;
-            m = 12;
-        } else {
-            m -= 1;
-        }
-    }
-    (y, m)
+    // Convert to a 0-based total-month count (month-1 makes it 0..=11).
+    let total = year * 12 + (month as i64 - 1) - n as i64;
+    // div_euclid / rem_euclid handles negative `total` correctly if n is large.
+    let new_year = total.div_euclid(12);
+    let new_month = (total.rem_euclid(12) + 1) as u32; // back to 1-based
+    (new_year, new_month)
 }
 
 /// Compute the ISO date range covered by `months` complete months ending
@@ -328,13 +330,18 @@ fn find_outliers(transactions: &[&Transaction]) -> Vec<SpendingOutlier> {
         }
     }
 
-    // Sort for deterministic output: by category, then by date, then by amount desc
+    // Sort for deterministic output: by category, then by date, then by amount desc,
+    // then by merchant name as the final stable tiebreaker.
     outliers.sort_by(|a, b| {
-        a.category.cmp(&b.category).then(a.date.cmp(&b.date)).then(
-            b.amount
-                .partial_cmp(&a.amount)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        )
+        a.category
+            .cmp(&b.category)
+            .then(a.date.cmp(&b.date))
+            .then(
+                b.amount
+                    .partial_cmp(&a.amount)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.merchant.cmp(&b.merchant))
     });
     outliers
 }
@@ -576,7 +583,7 @@ mod tests {
     #[test]
     fn range_for_months_count_default_6_excludes_current_month() {
         // today = 2026-05-15; 6 complete months = Nov 2025 through Apr 2026
-        let today = parse_iso_to_epoch_day("2026-05-15").unwrap();
+        let today = parse_date_for_test("2026-05-15").unwrap();
         let (start, end) = range_for_months_count(today, 6);
         assert_eq!(start, "2025-11-01");
         assert_eq!(end, "2026-04-30");
@@ -585,7 +592,7 @@ mod tests {
     #[test]
     fn range_for_months_count_1_returns_only_prior_month() {
         // today = 2026-05-15; 1 complete month = Apr 2026
-        let today = parse_iso_to_epoch_day("2026-05-15").unwrap();
+        let today = parse_date_for_test("2026-05-15").unwrap();
         let (start, end) = range_for_months_count(today, 1);
         assert_eq!(start, "2026-04-01");
         assert_eq!(end, "2026-04-30");
@@ -594,7 +601,7 @@ mod tests {
     #[test]
     fn range_for_months_count_crosses_year_when_today_is_january() {
         // today = 2026-01-10; 3 complete months = Oct, Nov, Dec 2025
-        let today = parse_iso_to_epoch_day("2026-01-10").unwrap();
+        let today = parse_date_for_test("2026-01-10").unwrap();
         let (start, end) = range_for_months_count(today, 3);
         assert_eq!(start, "2025-10-01");
         assert_eq!(end, "2025-12-31");
@@ -827,7 +834,7 @@ mod tests {
             make_expense_txn("G6", -150.0, "Groceries", "2026-04-15"),
         ];
         // today = 2026-05-15, 6 complete months = Nov 2025 – Apr 2026
-        let today = parse_iso_to_epoch_day("2026-05-15").unwrap();
+        let today = parse_date_for_test("2026-05-15").unwrap();
         let (start, end) = range_for_months_count(today, 6);
         let history = compute_spending_history(&txns, &start, &end);
         assert_eq!(history.months.len(), 6);
@@ -927,7 +934,7 @@ mod tests {
 
     #[test]
     fn range_for_months_count_zero_clamps_to_one_month() {
-        let today = parse_iso_to_epoch_day("2026-05-15").unwrap();
+        let today = parse_date_for_test("2026-05-15").unwrap();
         // months=0 must not panic; it clamps to 1, returning the prior month
         let (start, end) = range_for_months_count(today, 0);
         assert_eq!(start, "2026-04-01");
@@ -980,6 +987,98 @@ mod tests {
         assert!(
             labels.is_empty(),
             "Expected empty vec for non-ASCII end, got: {labels:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // subtract_months — O(1) arithmetic agrees with the O(n) loop
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn subtract_months_basic_within_year() {
+        // 2026-05 minus 3 = 2026-02
+        assert_eq!(subtract_months(2026, 5, 3), (2026, 2));
+    }
+
+    #[test]
+    fn subtract_months_crosses_year_boundary() {
+        // 2026-02 minus 3 = 2025-11
+        assert_eq!(subtract_months(2026, 2, 3), (2025, 11));
+    }
+
+    #[test]
+    fn subtract_months_exactly_one_year() {
+        // 2026-06 minus 12 = 2025-06
+        assert_eq!(subtract_months(2026, 6, 12), (2025, 6));
+    }
+
+    #[test]
+    fn subtract_months_more_than_one_year() {
+        // 2026-05 minus 18 = 2024-11
+        assert_eq!(subtract_months(2026, 5, 18), (2024, 11));
+    }
+
+    #[test]
+    fn subtract_months_zero_returns_same_month() {
+        assert_eq!(subtract_months(2026, 7, 0), (2026, 7));
+    }
+
+    #[test]
+    fn subtract_months_from_january_goes_to_december() {
+        // month==1 edge: 2026-01 minus 1 = 2025-12
+        assert_eq!(subtract_months(2026, 1, 1), (2025, 12));
+    }
+
+    #[test]
+    fn subtract_months_from_december_within_year() {
+        // month==12 edge: 2026-12 minus 1 = 2026-11
+        assert_eq!(subtract_months(2026, 12, 1), (2026, 11));
+    }
+
+    #[test]
+    fn subtract_months_large_n_crosses_multiple_years() {
+        // 2026-03 minus 24 = 2024-03
+        assert_eq!(subtract_months(2026, 3, 24), (2024, 3));
+    }
+
+    // -----------------------------------------------------------------------
+    // Outlier sort determinism — tiebreaker on merchant_name (and then id)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn outlier_sort_is_deterministic_when_category_date_amount_are_equal() {
+        // Two outlier-eligible transactions with IDENTICAL (category, date, amount)
+        // but DIFFERENT merchant_name.  Without a tiebreaker the output order is
+        // non-deterministic; with merchant_name as the tiebreaker it must always
+        // come out alphabetically (Alpha before Zeta).
+        //
+        // Three small normal transactions anchor the per-transaction average at ~$5.
+        // When computing the outlier threshold for each $900 candidate, the
+        // average-of-others = ($900 + $5 + $5 + $5) / 4 = $228.75, so the
+        // threshold is 3 × $228.75 = $686.25, which $900 clears.
+        let txns = vec![
+            make_expense_txn("Alpha Merchant", -900.0, "Dining", "2026-03-15"),
+            make_expense_txn("Zeta Merchant", -900.0, "Dining", "2026-03-15"),
+            make_expense_txn("Tiny Bite A", -5.0, "Dining", "2026-03-01"),
+            make_expense_txn("Tiny Bite B", -5.0, "Dining", "2026-03-02"),
+            make_expense_txn("Tiny Bite C", -5.0, "Dining", "2026-03-03"),
+        ];
+        let history = compute_spending_history(&txns, "2026-03-01", "2026-03-31");
+        let outliers = &history.months[0].outliers;
+        // Both large transactions must be flagged (900 >> 10, factor = 3× threshold)
+        assert_eq!(
+            outliers.len(),
+            2,
+            "Both identical-amount transactions should be outliers; got: {outliers:?}"
+        );
+        // Deterministic order: merchant_name ascending ("Alpha" < "Zeta")
+        assert_eq!(
+            outliers[0].merchant, "Alpha Merchant",
+            "First outlier should be Alpha Merchant (alphabetically first); got: {outliers:?}"
+        );
+        assert_eq!(
+            outliers[1].merchant, "Zeta Merchant",
+            "Second outlier should be Zeta Merchant; got: {outliers:?}"
         );
     }
 
