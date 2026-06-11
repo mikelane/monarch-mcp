@@ -77,6 +77,31 @@ fn huge_withdrawal_rate_is_rejected() {
     assert!(validate_withdrawal_rate(100.0).is_err());
 }
 
+#[test]
+fn out_of_range_error_message_names_both_boundaries() {
+    // The error String becomes the body of MonarchError::InvalidInput surfaced
+    // to the caller. It must be self-explaining: name the offending value AND
+    // both ends of the supported range, so a JSON caller sees "0.5 is outside
+    // [0.02, 0.10]" rather than a bare "invalid". Pin all three.
+    let msg = validate_withdrawal_rate(0.5).expect_err("0.5 is out of range");
+    assert!(
+        msg.contains("outside the supported range"),
+        "message must explain the failure mode, got: {msg}"
+    );
+    assert!(
+        msg.contains("0.02"),
+        "message must name the lower bound 0.02, got: {msg}"
+    );
+    assert!(
+        msg.contains("0.1"),
+        "message must name the upper bound 0.10, got: {msg}"
+    );
+    assert!(
+        msg.contains("0.5"),
+        "message must echo the offending value 0.5, got: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // VECTOR 2: boundary exactness. The range is documented as INCLUSIVE
 // [0.02, 0.10]. Probe just-inside and just-outside.
@@ -126,7 +151,10 @@ fn zero_spend_payload_serialises_without_infinity_or_nan() {
     // → serde emits `null`.
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(v["coverage_ratio"].is_null(), "coverage_ratio must be null");
-    assert!(v["target_portfolio"].is_null(), "target_portfolio must be null");
+    assert!(
+        v["target_portfolio"].is_null(),
+        "target_portfolio must be null"
+    );
     assert!(v["surplus_or_gap"].is_null(), "surplus_or_gap must be null");
 }
 
@@ -139,6 +167,21 @@ fn zero_invested_assets_serialises_coverage_zero_not_null() {
         v["coverage_ratio"].as_f64(),
         Some(0.0),
         "zero-asset coverage must serialise as 0.0, not null"
+    );
+    // The zero-INVESTED case is JSON-distinguishable from the zero-SPEND case:
+    // here the target and gap are STILL present (the spender has a real target
+    // they simply haven't funded), whereas zero-spend nulls all three. Pin the
+    // exact serialised values so a regression that conflates the two guards is
+    // caught at the wire format, not just in Rust Option-land.
+    assert_eq!(
+        v["target_portfolio"].as_f64(),
+        Some(1_000_000.0),
+        "zero-asset target_portfolio must be 1,000,000 (40k / 0.04), not null"
+    );
+    assert_eq!(
+        v["surplus_or_gap"].as_f64(),
+        Some(-1_000_000.0),
+        "zero-asset surplus_or_gap must be -1,000,000 (full gap), not null"
     );
 }
 
@@ -153,6 +196,11 @@ fn canonical_breakeven_case() {
     assert!((rr.coverage_ratio.unwrap() - 1.0).abs() < 1e-9);
     assert!((rr.target_portfolio.unwrap() - 1_000_000.0).abs() < 1e-6);
     assert!(rr.surplus_or_gap.unwrap().abs() < 1e-6);
+    assert!(
+        (rr.withdrawal_rate_used - 0.04).abs() < 1e-9,
+        "withdrawal_rate_used must echo the 0.04 input, got {}",
+        rr.withdrawal_rate_used
+    );
 }
 
 #[test]
@@ -161,6 +209,11 @@ fn canonical_half_coverage_case() {
     assert!((rr.coverage_ratio.unwrap() - 0.5).abs() < 1e-9);
     assert!((rr.target_portfolio.unwrap() - 1_000_000.0).abs() < 1e-6);
     assert!((rr.surplus_or_gap.unwrap() + 500_000.0).abs() < 1e-6);
+    assert!(
+        (rr.withdrawal_rate_used - 0.04).abs() < 1e-9,
+        "withdrawal_rate_used must echo the 0.04 input, got {}",
+        rr.withdrawal_rate_used
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -179,10 +232,22 @@ fn reconciliation_only_equities_count() {
         account("crypto", Some("crypto"), 30_000.0),
         account("credit", Some("credit_card"), -10_000.0),
     ];
-    let invested: f64 = invested_financial_accounts(&accounts)
-        .iter()
-        .map(|a| a.current_balance)
-        .sum();
+    let invested_accounts = invested_financial_accounts(&accounts);
+    // Pin the COUNT, not just the sum: exactly one of the six accounts is
+    // Equities-class. The sum guard alone can be satisfied by the wrong set of
+    // accounts; the count guard is the honest reconciliation invariant and
+    // kills mutations that admit a non-equities account into the SWR base.
+    assert_eq!(
+        invested_accounts.len(),
+        1,
+        "exactly one account (the brokerage) is Equities-class; \
+         real_estate, vehicle, depository, crypto, credit are all excluded"
+    );
+    assert_eq!(
+        invested_accounts[0].account_type.name, "brokerage",
+        "the single invested account must be the brokerage"
+    );
+    let invested: f64 = invested_accounts.iter().map(|a| a.current_balance).sum();
     assert!(
         (invested - 800_000.0).abs() < 1e-6,
         "invested must be exactly 800,000 (only the brokerage), got {invested}"
