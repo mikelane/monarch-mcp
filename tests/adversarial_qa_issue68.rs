@@ -383,3 +383,142 @@ fn bug_single_month_window_omits_yearly_streams() {
         "monthly stream must appear exactly once"
     );
 }
+
+// ===========================================================================
+// RUN #2 RE-ATTACK PROBES (HEAD 60c0aa0) — the window, cadence, and sort all
+// changed; re-attack the new surface. All of these PASS at the fixed SHA.
+// ===========================================================================
+
+// --- Cadence casing: every casing variant must normalize, not fall to 1.0 ---
+
+#[test]
+fn reattack_uppercase_yearly_normalizes() {
+    let r = compute_subscription_audit(&[item("NewsCo", -120.0, "YEARLY", false)]);
+    assert!(
+        (r.subscriptions[0].monthly_amount - 10.0).abs() < 0.01,
+        "'YEARLY' must normalize to $10/mo, got {}",
+        r.subscriptions[0].monthly_amount
+    );
+}
+
+#[test]
+fn reattack_mixedcase_monthly_normalizes() {
+    let r = compute_subscription_audit(&[item("Gym", -40.0, "Monthly", false)]);
+    assert!(
+        (r.subscriptions[0].monthly_amount - 40.0).abs() < 0.01,
+        "'Monthly' must stay $40/mo, got {}",
+        r.subscriptions[0].monthly_amount
+    );
+}
+
+#[test]
+fn reattack_uppercase_weekly_normalizes() {
+    let r = compute_subscription_audit(&[item("Wk", -10.0, "WEEKLY", false)]);
+    let expected = 10.0 * 52.0 / 12.0;
+    assert!(
+        (r.subscriptions[0].monthly_amount - expected).abs() < 0.01,
+        "'WEEKLY' must normalize to {expected:.4}/mo, got {}",
+        r.subscriptions[0].monthly_amount
+    );
+}
+
+#[test]
+fn reattack_tabs_and_newlines_trimmed() {
+    // Embedded surrounding whitespace incl. tab/newline must be trimmed.
+    let r = compute_subscription_audit(&[item("NewsCo", -120.0, "\t yearly \n", false)]);
+    assert!(
+        (r.subscriptions[0].monthly_amount - 10.0).abs() < 0.01,
+        "tab/newline-padded 'yearly' must normalize to $10/mo, got {}",
+        r.subscriptions[0].monthly_amount
+    );
+}
+
+#[test]
+fn reattack_genuinely_unknown_cadence_still_falls_back_to_monthly() {
+    // The fallback must remain for truly-unknown strings (not over-eager matching).
+    let r = compute_subscription_audit(&[item("Mystery", -25.0, "every_blue_moon", false)]);
+    assert!(
+        (r.subscriptions[0].monthly_amount - 25.0).abs() < 0.01,
+        "unknown cadence must fall back to monthly (1.0), got {}",
+        r.subscriptions[0].monthly_amount
+    );
+}
+
+#[test]
+fn reattack_weird_strings_do_not_panic() {
+    // Empty, unicode, very long, numeric — none may panic; all → monthly fallback.
+    let weird = ["", "  ", "💸", "123", &"x".repeat(10_000), "MoNtHlY-ish"];
+    for w in weird {
+        let r = compute_subscription_audit(&[item("M", -10.0, w, false)]);
+        assert!(
+            r.total_monthly.is_finite(),
+            "weird cadence {w:?} must not produce non-finite total"
+        );
+    }
+}
+
+// --- Sort: descending-by-annualized unchanged for non-tied cases ---
+
+#[test]
+fn reattack_descending_order_unchanged_for_distinct_costs() {
+    // Input intentionally out of order; output must be strictly descending.
+    let items = vec![
+        item("Cheap", -5.0, "monthly", false),    // 60/yr
+        item("Pricey", -100.0, "monthly", false), // 1200/yr
+        item("Mid", -50.0, "monthly", false),     // 600/yr
+    ];
+    let r = compute_subscription_audit(&items);
+    let order: Vec<&str> = r.subscriptions.iter().map(|s| s.merchant.as_str()).collect();
+    assert_eq!(order, vec!["Pricey", "Mid", "Cheap"], "must be descending by annualized");
+}
+
+// --- Income exclusion survives the wider, mixed-cadence flow ---
+
+#[test]
+fn reattack_income_excluded_in_mixed_cadence_flow() {
+    let items = vec![
+        item("Employer", 5000.0, "monthly", false),     // income → excluded
+        item("Bonus", 1000.0, "yearly", false),         // positive yearly income → excluded
+        item("Netflix", -15.0, "monthly", false),       // 15/mo
+        item("NewsCo", -120.0, "yearly", false),        // 10/mo
+        item("Pass", -120.0, "semiannual", false),      // 20/mo
+    ];
+    let r = compute_subscription_audit(&items);
+    assert_eq!(r.subscriptions.len(), 3, "only the 3 outflows survive");
+    let names: Vec<&str> = r.subscriptions.iter().map(|s| s.merchant.as_str()).collect();
+    assert!(!names.contains(&"Employer") && !names.contains(&"Bonus"));
+    // total_monthly = 15 + 10 + 20 = 45; income must NOT leak in.
+    assert!(
+        (r.total_monthly - 45.0).abs() < 0.01,
+        "income must not leak into totals; expected 45.00, got {}",
+        r.total_monthly
+    );
+    assert!((r.total_annual - 540.0).abs() < 0.01);
+}
+
+// --- Mid-year price change (wider-window edge): documents the behavior ---
+// A stream whose declared amount differs across the window arrives as TWO items
+// with different stream_amount. compute keeps BOTH (distinct -> two rows). This
+// is the SAFE direction (no silent loss); over-counting one logical sub as two
+// rows is visible. Reachability is bounded by the domain invariant that Monarch's
+// forward recurringTransactionItems reference ONE current stream definition, so
+// all forward occurrences carry a single stream.amount (per-stream). Documented,
+// not guarded, per circuit-breaker philosophy.
+#[test]
+fn reattack_two_amounts_same_merchant_kept_separate_safe_direction() {
+    let items = vec![
+        item("Spotify", -10.0, "monthly", false),
+        item("Spotify", -12.0, "monthly", false), // post-price-increase snapshot
+    ];
+    let r = compute_subscription_audit(&items);
+    assert_eq!(
+        r.subscriptions.len(),
+        2,
+        "distinct amounts are kept separate (no silent loss); totals stay correct"
+    );
+    assert!(
+        (r.total_monthly - 22.0).abs() < 0.01,
+        "both amounts counted; expected 22.00, got {}",
+        r.total_monthly
+    );
+}
