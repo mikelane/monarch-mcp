@@ -140,7 +140,7 @@ pub struct AccountSubtype {
 /// Populated from `GetTransactionsList → allTransactions.results[]`.
 /// Monarch's real response has `merchant.name` (not `merchantName`) and
 /// `tags` as objects with `{id, name, color, order}` (not bare strings).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Transaction {
     pub id: String,
     pub amount: f64,

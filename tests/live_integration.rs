@@ -37,6 +37,7 @@ use monarch_mcp::financial_overview::compute_overview;
 use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
 use monarch_mcp::net_worth_trend::compute_trend;
 use monarch_mcp::recurring_scan::compute_scan;
+use monarch_mcp::savings_rate::compute_savings_rate;
 use monarch_mcp::spending_history::{compute_spending_history, range_for_months_count};
 use monarch_mcp::spending_report::compute_spending_report;
 use monarch_mcp::triage::resolve_category_names;
@@ -1231,4 +1232,134 @@ async fn spending_history_returns_valid_structure_from_real_monarch() {
             m.outliers.len()
         );
     }
+}
+
+/// Verify that `savings_rate` works end-to-end against the real Monarch API
+/// and that its per-month `true_spending` agrees with `spending_history` for
+/// the same 3-month range (both tools use the same transaction source).
+///
+/// Does NOT assert specific dollar amounts — those change daily.
+/// Asserts structural validity and cross-tool consistency only.
+#[tokio::test]
+async fn savings_rate_returns_valid_structure_and_agrees_with_spending_history() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today_days = (now / 86_400) as i64;
+    let (start, end) = range_for_months_count(today_days, 3);
+
+    eprintln!("savings_rate range: {start} — {end}");
+
+    let transactions = client
+        .get_transactions(&start, &end, i32::MAX as u32)
+        .await
+        .expect("GetTransactionsList must succeed against real Monarch");
+
+    eprintln!("transactions fetched: {}", transactions.len());
+
+    let result = compute_savings_rate(&transactions, &start, &end);
+    let history = compute_spending_history(&transactions, &start, &end);
+
+    // Must return exactly 3 monthly entries.
+    assert_eq!(
+        result.months.len(),
+        3,
+        "expected 3 monthly entries for a 3-month range, got {}",
+        result.months.len()
+    );
+    assert_eq!(result.range_start, start);
+    assert_eq!(result.range_end, end);
+
+    for m in &result.months {
+        // Month label must be YYYY-MM format.
+        assert!(
+            m.month.len() == 7 && m.month.contains('-'),
+            "month label must be YYYY-MM format, got {:?}",
+            m.month
+        );
+
+        // Income must be non-negative.
+        assert!(
+            m.income >= 0.0,
+            "income must be non-negative for month {:?}, got {}",
+            m.month,
+            m.income
+        );
+
+        // True spending must be non-negative (expense magnitudes only).
+        assert!(
+            m.true_spending >= 0.0,
+            "true_spending must be non-negative for month {:?}, got {}",
+            m.month,
+            m.true_spending
+        );
+
+        // net_savings = income - true_spending (within floating-point tolerance).
+        let expected_net = m.income - m.true_spending;
+        assert!(
+            (m.net_savings - expected_net).abs() < 0.01,
+            "net_savings ({:.2}) != income ({:.2}) - true_spending ({:.2}) for {:?}",
+            m.net_savings,
+            m.income,
+            m.true_spending,
+            m.month
+        );
+
+        // savings_rate: present iff income > 0, value in [-100_000, 100] range.
+        if m.income > 0.0 {
+            let rate = m
+                .savings_rate
+                .expect("savings_rate must be present when income > 0");
+            assert!(
+                (-100_000.0_f64..=100.0).contains(&rate),
+                "savings_rate {rate:.2} is outside plausible range for month {:?}",
+                m.month
+            );
+        } else {
+            assert!(
+                m.savings_rate.is_none(),
+                "savings_rate must be absent when income == 0 for month {:?}",
+                m.month
+            );
+        }
+
+        // Cross-tool consistency: true_spending must agree with spending_history.
+        let history_month = history.months.iter().find(|h| h.month == m.month);
+        if let Some(hist) = history_month {
+            assert!(
+                (m.true_spending - hist.total_true_spending).abs() < 0.01,
+                "savings_rate true_spending ({:.2}) disagrees with spending_history \
+                 total_true_spending ({:.2}) for month {:?}",
+                m.true_spending,
+                hist.total_true_spending,
+                m.month
+            );
+        }
+
+        eprintln!(
+            "  {} income={:.2} spending={:.2} net={:.2} rate={:?}",
+            m.month, m.income, m.true_spending, m.net_savings, m.savings_rate
+        );
+    }
+
+    // window_average_savings_rate: present iff at least one month had income > 0.
+    let any_income = result.months.iter().any(|m| m.income > 0.0);
+    if any_income {
+        assert!(
+            result.window_average_savings_rate.is_some(),
+            "window_average_savings_rate must be present when at least one month has income"
+        );
+    }
+    eprintln!(
+        "window_average_savings_rate: {:?}",
+        result.window_average_savings_rate
+    );
 }
