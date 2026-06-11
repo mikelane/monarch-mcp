@@ -1319,7 +1319,7 @@ async fn savings_rate_returns_valid_structure_and_agrees_with_spending_history()
                 .savings_rate
                 .expect("savings_rate must be present when income > 0");
             assert!(
-                rate >= -100_000.0 && rate <= 100.0,
+                (-100_000.0_f64..=100.0).contains(&rate),
                 "savings_rate {rate:.2} is outside plausible range for month {:?}",
                 m.month
             );
