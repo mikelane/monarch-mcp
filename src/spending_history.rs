@@ -232,18 +232,16 @@ fn month_bucket(date: &str) -> Option<String> {
 }
 
 /// Subtract `n` months from `(year, month)`, returning the new `(year, month)`.
+///
+/// Uses O(1) modular arithmetic: convert to a 0-based total-months index,
+/// subtract, then convert back.  Months are 1-based (1..=12).
 fn subtract_months(year: i64, month: u32, n: u32) -> (i64, u32) {
-    let mut y = year;
-    let mut m = month;
-    for _ in 0..n {
-        if m == 1 {
-            y -= 1;
-            m = 12;
-        } else {
-            m -= 1;
-        }
-    }
-    (y, m)
+    // Convert to a 0-based total-month count (month-1 makes it 0..=11).
+    let total = year * 12 + (month as i64 - 1) - n as i64;
+    // div_euclid / rem_euclid handles negative `total` correctly if n is large.
+    let new_year = total.div_euclid(12);
+    let new_month = (total.rem_euclid(12) + 1) as u32; // back to 1-based
+    (new_year, new_month)
 }
 
 /// Compute the ISO date range covered by `months` complete months ending
@@ -990,6 +988,57 @@ mod tests {
             labels.is_empty(),
             "Expected empty vec for non-ASCII end, got: {labels:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // subtract_months — O(1) arithmetic agrees with the O(n) loop
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn subtract_months_basic_within_year() {
+        // 2026-05 minus 3 = 2026-02
+        assert_eq!(subtract_months(2026, 5, 3), (2026, 2));
+    }
+
+    #[test]
+    fn subtract_months_crosses_year_boundary() {
+        // 2026-02 minus 3 = 2025-11
+        assert_eq!(subtract_months(2026, 2, 3), (2025, 11));
+    }
+
+    #[test]
+    fn subtract_months_exactly_one_year() {
+        // 2026-06 minus 12 = 2025-06
+        assert_eq!(subtract_months(2026, 6, 12), (2025, 6));
+    }
+
+    #[test]
+    fn subtract_months_more_than_one_year() {
+        // 2026-05 minus 18 = 2024-11
+        assert_eq!(subtract_months(2026, 5, 18), (2024, 11));
+    }
+
+    #[test]
+    fn subtract_months_zero_returns_same_month() {
+        assert_eq!(subtract_months(2026, 7, 0), (2026, 7));
+    }
+
+    #[test]
+    fn subtract_months_from_january_goes_to_december() {
+        // month==1 edge: 2026-01 minus 1 = 2025-12
+        assert_eq!(subtract_months(2026, 1, 1), (2025, 12));
+    }
+
+    #[test]
+    fn subtract_months_from_december_within_year() {
+        // month==12 edge: 2026-12 minus 1 = 2026-11
+        assert_eq!(subtract_months(2026, 12, 1), (2026, 11));
+    }
+
+    #[test]
+    fn subtract_months_large_n_crosses_multiple_years() {
+        // 2026-03 minus 24 = 2024-03
+        assert_eq!(subtract_months(2026, 3, 24), (2024, 3));
     }
 
     // -----------------------------------------------------------------------
