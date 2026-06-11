@@ -84,7 +84,7 @@ pub struct RetirementReadiness {
 /// (which also includes `RealEstate`). For SWR calculations, primary-residence
 /// real estate is illiquid and excluded from the drawdown portfolio per
 /// standard financial planning convention (ADR 0016).
-pub(crate) fn invested_financial_accounts<'a>(accounts: &'a [Account]) -> Vec<&'a Account> {
+pub(crate) fn invested_financial_accounts(accounts: &[Account]) -> Vec<&Account> {
     accounts
         .iter()
         .filter(|a| {
@@ -111,7 +111,7 @@ pub const WITHDRAWAL_RATE_DEFAULT: f64 = 0.04;
 /// message on failure (suitable for wrapping in
 /// [`MonarchError::InvalidInput`]).
 pub fn validate_withdrawal_rate(rate: f64) -> Result<f64, String> {
-    if rate < WITHDRAWAL_RATE_MIN || rate > WITHDRAWAL_RATE_MAX {
+    if !(WITHDRAWAL_RATE_MIN..=WITHDRAWAL_RATE_MAX).contains(&rate) {
         Err(format!(
             "withdrawal_rate {rate} is outside the supported range \
              [{WITHDRAWAL_RATE_MIN}, {WITHDRAWAL_RATE_MAX}]: \
@@ -304,7 +304,11 @@ mod tests {
             make_account("depository", Some("checking"), 50_000.0),
         ];
         let invested = invested_financial_accounts(&accounts);
-        assert_eq!(invested.len(), 3, "all three brokerage accounts are invested");
+        assert_eq!(
+            invested.len(),
+            3,
+            "all three brokerage accounts are invested"
+        );
         let total: f64 = invested.iter().map(|a| a.current_balance).sum();
         assert!((total - 800_000.0).abs() < 0.01);
     }
