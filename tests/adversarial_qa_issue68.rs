@@ -468,8 +468,16 @@ fn reattack_descending_order_unchanged_for_distinct_costs() {
         item("Mid", -50.0, "monthly", false),     // 600/yr
     ];
     let r = compute_subscription_audit(&items);
-    let order: Vec<&str> = r.subscriptions.iter().map(|s| s.merchant.as_str()).collect();
-    assert_eq!(order, vec!["Pricey", "Mid", "Cheap"], "must be descending by annualized");
+    let order: Vec<&str> = r
+        .subscriptions
+        .iter()
+        .map(|s| s.merchant.as_str())
+        .collect();
+    assert_eq!(
+        order,
+        vec!["Pricey", "Mid", "Cheap"],
+        "must be descending by annualized"
+    );
 }
 
 // --- Income exclusion survives the wider, mixed-cadence flow ---
@@ -477,15 +485,19 @@ fn reattack_descending_order_unchanged_for_distinct_costs() {
 #[test]
 fn reattack_income_excluded_in_mixed_cadence_flow() {
     let items = vec![
-        item("Employer", 5000.0, "monthly", false),     // income → excluded
-        item("Bonus", 1000.0, "yearly", false),         // positive yearly income → excluded
-        item("Netflix", -15.0, "monthly", false),       // 15/mo
-        item("NewsCo", -120.0, "yearly", false),        // 10/mo
-        item("Pass", -120.0, "semiannual", false),      // 20/mo
+        item("Employer", 5000.0, "monthly", false), // income → excluded
+        item("Bonus", 1000.0, "yearly", false),     // positive yearly income → excluded
+        item("Netflix", -15.0, "monthly", false),   // 15/mo
+        item("NewsCo", -120.0, "yearly", false),    // 10/mo
+        item("Pass", -120.0, "semiannual", false),  // 20/mo
     ];
     let r = compute_subscription_audit(&items);
     assert_eq!(r.subscriptions.len(), 3, "only the 3 outflows survive");
-    let names: Vec<&str> = r.subscriptions.iter().map(|s| s.merchant.as_str()).collect();
+    let names: Vec<&str> = r
+        .subscriptions
+        .iter()
+        .map(|s| s.merchant.as_str())
+        .collect();
     assert!(!names.contains(&"Employer") && !names.contains(&"Bonus"));
     // total_monthly = 15 + 10 + 20 = 45; income must NOT leak in.
     assert!(
