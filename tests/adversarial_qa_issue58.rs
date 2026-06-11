@@ -38,13 +38,7 @@ fn expense(merchant: &str, amount: f64, category: &str, date: &str) -> Transacti
     }
 }
 
-fn expense_id(
-    id: &str,
-    merchant: &str,
-    amount: f64,
-    category: &str,
-    date: &str,
-) -> Transaction {
+fn expense_id(id: &str, merchant: &str, amount: f64, category: &str, date: &str) -> Transaction {
     Transaction {
         id: id.to_string(),
         amount,
@@ -140,7 +134,10 @@ fn subtract_months_negative_total_branch_matches_loop() {
     // year=0 month=1 -> total = -1 -> div_euclid(12) = -1, rem_euclid = 11 -> (−1, 12).
     assert_eq!(subtract_months_old(0, 1, 1), subtract_months_new(0, 1, 1));
     assert_eq!(subtract_months_old(0, 1, 13), subtract_months_new(0, 1, 13));
-    assert_eq!(subtract_months_old(1, 6, 100), subtract_months_new(1, 6, 100));
+    assert_eq!(
+        subtract_months_old(1, 6, 100),
+        subtract_months_new(1, 6, 100)
+    );
     assert_eq!(subtract_months_new(0, 1, 1), (-1, 12));
 }
 
@@ -343,9 +340,7 @@ fn outlier_ordering_does_not_change_totals_or_split() {
     assert_eq!(ma.total_true_spending, mb.total_true_spending);
     assert_eq!(ma.split, mb.split);
     // And fixed + discretionary == total (invariant preserved).
-    assert!(
-        (ma.split.fixed + ma.split.discretionary - ma.total_true_spending).abs() < 1e-9
-    );
+    assert!((ma.split.fixed + ma.split.discretionary - ma.total_true_spending).abs() < 1e-9);
 }
 
 // ===========================================================================
