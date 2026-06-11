@@ -19,5 +19,6 @@ pub mod recurring_scan;
 pub mod savings_rate;
 pub mod spending_history;
 pub mod spending_report;
+pub mod subscription_audit;
 pub mod tools;
 pub mod triage;

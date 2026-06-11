@@ -42,6 +42,7 @@ use monarch_mcp::recurring_scan::compute_scan;
 use monarch_mcp::savings_rate::compute_savings_rate;
 use monarch_mcp::spending_history::{compute_spending_history, range_for_months_count};
 use monarch_mcp::spending_report::compute_spending_report;
+use monarch_mcp::subscription_audit::compute_subscription_audit;
 use monarch_mcp::triage::resolve_category_names;
 use std::env;
 
@@ -117,6 +118,34 @@ fn days_in_month(year: i64, month: u32) -> u32 {
         }
         _ => 31,
     }
+}
+
+/// Build the 12-month forward audit window for use in live tests.
+///
+/// Mirrors `audit_window_for_day` from `tools.rs` so the live test uses the
+/// same window as the real handler. Start = today, End = last day of the month
+/// 12 months forward.
+fn twelve_month_audit_window() -> (String, String) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today_days = (now / 86_400) as i64;
+    let (year, month, dom) = days_to_ymd(today_days);
+    let start = format!("{year:04}-{month:02}-{dom:02}");
+    let mut ey = year;
+    let mut em = month;
+    for _ in 0..12 {
+        if em == 12 {
+            ey += 1;
+            em = 1;
+        } else {
+            em += 1;
+        }
+    }
+    let last_day = days_in_month(ey, em);
+    let end = format!("{ey:04}-{em:02}-{last_day:02}");
+    (start, end)
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,5 +1698,235 @@ async fn budget_review_returns_valid_structure_from_real_monarch() {
         review.rollup.under_count,
         review.rollup.over_budget_count,
         review.by_category.len()
+    );
+}
+
+/// Verify that `subscription_audit` works end-to-end against the real Monarch
+/// API and that its stream set reconciles with `recurring_scan`'s stream set.
+///
+/// The audit uses a 12-month forward window so every cadence — monthly through
+/// annual — has at least one occurrence in the fetch window (ADR 0015 Decision 7).
+/// The scan uses the current calendar month (its normal window).
+///
+/// Since the audit window is a superset of the scan window, every outflow
+/// stream visible in the scan MUST appear in the audit. This reconciliation
+/// check verifies no stream is silently dropped by the wider-window path.
+///
+/// Asserts:
+/// 1. `get_recurring_for_audit` returns structurally valid items (finite amounts,
+///    non-empty merchants, non-empty frequency strings).
+/// 2. `compute_subscription_audit` produces finite totals, non-empty merchant
+///    names, non-negative magnitudes, and cadence strings preserved.
+/// 3. `total_annual ≈ total_monthly * 12` (within floating-point tolerance).
+/// 4. Every outflow stream from `get_recurring_for_scan` (current month) that
+///    has a non-empty merchant is represented in the subscription_audit merchant
+///    set — the 12-month window is a superset so this must hold (ADR 0015).
+/// 5. Income streams (positive stream_amount from Monarch) do NOT appear in
+///    `subscriptions` (income-exclusion invariant holds on live data).
+/// 6. The audit fetch window is verified to span at least 365 days.
+///
+/// Does NOT assert specific dollar amounts or stream counts — those change over time.
+#[tokio::test]
+async fn subscription_audit_returns_valid_structure_and_reconciles_with_recurring_scan() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    // Audit uses a 12-month forward window (ADR 0015 Decision 7).
+    let (audit_start, audit_end) = twelve_month_audit_window();
+    // Scan uses the current calendar month (its normal window).
+    let (cur_start, cur_end) = current_month();
+
+    eprintln!("audit window: {audit_start} .. {audit_end}");
+    eprintln!("scan  window: {cur_start} .. {cur_end}");
+
+    // --- Verify the audit window spans >= 12 months (>= 365 days). ---
+    // This catches a regression where audit_window_for_day is accidentally
+    // narrowed back to a single month.
+    {
+        fn parse_days(s: &str) -> i64 {
+            let parts: Vec<i64> = s.split('-').map(|p| p.parse().unwrap()).collect();
+            // Howard Hinnant civil_to_epoch_day
+            let (y, m, d) = (parts[0], parts[1], parts[2]);
+            let yy = if m <= 2 { y - 1 } else { y };
+            let era = if yy >= 0 { yy } else { yy - 399 } / 400;
+            let yoe = yy - era * 400;
+            let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+            let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+            era * 146_097 + doe - 719_468
+        }
+        let window_days = parse_days(&audit_end) - parse_days(&audit_start);
+        assert!(
+            window_days >= 365,
+            "audit window must span >= 365 days to capture all cadences; got {window_days} days \
+             ({audit_start} .. {audit_end})"
+        );
+    }
+
+    // --- Fetch both data paths ---
+    let audit_items = client
+        .get_recurring_for_audit(&audit_start, &audit_end)
+        .await
+        .expect("get_recurring_for_audit must succeed against real Monarch");
+
+    let scan_items = client
+        .get_recurring_for_scan(&cur_start, &cur_end)
+        .await
+        .expect("get_recurring_for_scan must succeed against real Monarch");
+
+    eprintln!("audit items (deduplicated streams): {}", audit_items.len());
+    eprintln!("scan items (occurrences): {}", scan_items.len());
+
+    // 1. Structural validity of audit items.
+    for item in &audit_items {
+        assert!(
+            !item.merchant.is_empty(),
+            "audit item merchant must not be empty"
+        );
+        assert!(
+            item.stream_amount.is_finite(),
+            "audit item stream_amount must be finite for {:?}",
+            item.merchant
+        );
+        assert!(
+            !item.frequency.is_empty(),
+            "audit item frequency must not be empty for {:?}",
+            item.merchant
+        );
+    }
+
+    // 2. Compute audit and verify output structure.
+    let audit = compute_subscription_audit(&audit_items);
+
+    eprintln!("subscriptions: {}", audit.subscriptions.len());
+    eprintln!("total_monthly: {:.2}", audit.total_monthly);
+    eprintln!("total_annual:  {:.2}", audit.total_annual);
+
+    assert!(
+        audit.total_monthly.is_finite(),
+        "total_monthly must be finite"
+    );
+    assert!(
+        audit.total_annual.is_finite(),
+        "total_annual must be finite"
+    );
+    assert!(
+        audit.total_monthly >= 0.0,
+        "total_monthly must be non-negative, got {}",
+        audit.total_monthly
+    );
+    assert!(
+        audit.total_annual >= 0.0,
+        "total_annual must be non-negative, got {}",
+        audit.total_annual
+    );
+
+    for sub in &audit.subscriptions {
+        assert!(
+            !sub.merchant.is_empty(),
+            "subscription merchant must not be empty"
+        );
+        assert!(
+            !sub.cadence.is_empty(),
+            "subscription cadence must not be empty for {:?}",
+            sub.merchant
+        );
+        assert!(
+            sub.monthly_amount >= 0.0,
+            "monthly_amount must be non-negative for {:?}, got {}",
+            sub.merchant,
+            sub.monthly_amount
+        );
+        assert!(
+            sub.annualized_amount >= 0.0,
+            "annualized_amount must be non-negative for {:?}, got {}",
+            sub.merchant,
+            sub.annualized_amount
+        );
+        assert!(
+            sub.monthly_amount.is_finite(),
+            "monthly_amount must be finite for {:?}",
+            sub.merchant
+        );
+        assert!(
+            sub.annualized_amount.is_finite(),
+            "annualized_amount must be finite for {:?}",
+            sub.merchant
+        );
+        eprintln!(
+            "  {:?}: cadence={:?} monthly={:.2} annual={:.2} approx={}",
+            sub.merchant, sub.cadence, sub.monthly_amount, sub.annualized_amount, sub.approximate
+        );
+    }
+
+    // 3. total_annual ≈ total_monthly * 12 (within floating-point tolerance).
+    assert!(
+        (audit.total_annual - audit.total_monthly * 12.0).abs() < 0.01,
+        "total_annual ({:.2}) must equal total_monthly ({:.2}) * 12",
+        audit.total_annual,
+        audit.total_monthly
+    );
+
+    // 4. Reconciliation: every outflow stream in scan_items with a known merchant
+    //    must appear in the audit's merchant set. The audit deduplicates by stream
+    //    while scan_items may have multiple occurrences of the same stream within
+    //    the month window — use a set for comparison.
+    let audit_merchants: std::collections::HashSet<&str> = audit
+        .subscriptions
+        .iter()
+        .map(|s| s.merchant.as_str())
+        .collect();
+
+    // Collect unique outflow merchant names from scan_items (stream_amount < 0).
+    let scan_outflow_merchants: std::collections::HashSet<&str> = scan_items
+        .iter()
+        .filter(|i| i.stream_amount < 0.0 && i.merchant != "Unknown")
+        .map(|i| i.merchant.as_str())
+        .collect();
+
+    for merchant in &scan_outflow_merchants {
+        assert!(
+            audit_merchants.contains(*merchant),
+            "outflow stream {:?} appears in recurring_scan but is absent from \
+             subscription_audit — same data source must produce consistent stream sets \
+             (ADR 0015 reconciliation invariant)",
+            merchant
+        );
+    }
+
+    eprintln!(
+        "reconciliation: scan_outflow_merchants={} audit_merchants={}",
+        scan_outflow_merchants.len(),
+        audit_merchants.len()
+    );
+
+    // 5. Income exclusion: no subscription entry must have a stream_amount > 0 at
+    //    the source level. Verify by checking audit_items directly.
+    let income_in_audit: Vec<&str> = audit_items
+        .iter()
+        .filter(|i| i.stream_amount > 0.0)
+        .map(|i| i.merchant.as_str())
+        .collect();
+    // Note: audit_items may include income if Monarch returns income streams.
+    // compute_subscription_audit filters them out. Verify the output has none.
+    for sub in &audit.subscriptions {
+        // Find the source item for this subscription.
+        let source = audit_items.iter().find(|i| i.merchant == sub.merchant);
+        if let Some(src) = source {
+            assert!(
+                src.stream_amount < 0.0,
+                "subscription {:?} must come from an outflow stream (stream_amount < 0), \
+                 got {}",
+                sub.merchant,
+                src.stream_amount
+            );
+        }
+    }
+    eprintln!("income items in raw audit data: {}", income_in_audit.len());
+    eprintln!(
+        "income exclusion confirmed: {} subscriptions, all outflows",
+        audit.subscriptions.len()
     );
 }

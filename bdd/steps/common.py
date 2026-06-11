@@ -44,6 +44,7 @@ def step_assert_reauth_required(context):
         or getattr(context, "forecast_result", None)
         or getattr(context, "trend_result", None)
         or getattr(context, "scan_result", None)
+        or getattr(context, "audit_result", None)
         or getattr(context, "inventory_result", None)
         or getattr(context, "budget_review_result", None)
         or getattr(context, "allocation_result", None)

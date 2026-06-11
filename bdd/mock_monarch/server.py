@@ -51,6 +51,11 @@ _DEFAULT_FIXTURES: dict[str, Any] = {
     # List of recurring charge dicts for Web_GetUpcomingRecurringTransactionItems:
     #   {merchant, stream_amount, actual_amount?, frequency, is_approximate, is_past}
     "recurring_items": [],
+    # Income inflow streams: same shape but stream.amount is POSITIVE (inflow).
+    # Used by subscription_audit BDD tests to verify income exclusion.
+    # The normal recurring_items path always negates stream_amount to -abs(stream_amount).
+    # Entries here are emitted with a positive stream.amount instead.
+    "income_items": [],
     # List of net-worth-by-type snapshot dicts for GetSnapshotsByAccountType:
     #   {month (YYYY-MM), account_type, balance}
     "snapshots_by_type": [],
@@ -714,6 +719,53 @@ def _handle_web_get_upcoming_recurring(body: dict) -> dict:
             },
             "__typename": "RecurringTransactionItem",
         })
+    # Append income inflow items (positive stream.amount) for subscription_audit
+    # income-exclusion tests.  These are NOT negated — stream.amount is positive
+    # so the Rust client's filter (stream_amount < 0.0) correctly excludes them.
+    offset = len(fixtures.get("recurring_items", []))
+    for j, r in enumerate(fixtures.get("income_items", [])):
+        i = offset + j
+        merchant_name = r.get("merchant", f"IncomeMerchant {j}")
+        stream_amount = float(r.get("stream_amount", 0.0))
+        frequency = r.get("frequency", "monthly")
+        if merchant_name is None:
+            merchant_obj = None
+        else:
+            merchant_obj = {
+                "id": f"merch-income-{j}",
+                "name": merchant_name,
+                "logoUrl": None,
+                "__typename": "RecurringTransactionStream",
+            }
+        items.append({
+            "stream": {
+                "id": f"stream-income-{j}",
+                "frequency": frequency,
+                # Positive amount = inflow (income) — NOT negated
+                "amount": abs(stream_amount),
+                "isApproximate": False,
+                "merchant": merchant_obj,
+                "__typename": "RecurringTransactionStream",
+            },
+            "date": r.get("date", "2026-05-01"),
+            "isPast": False,
+            "transactionId": None,
+            "amount": abs(stream_amount),
+            "amountDiff": 0.0,
+            "category": {
+                "id": f"cat-income-{j}",
+                "name": "Income",
+                "__typename": "Category",
+            },
+            "account": {
+                "id": "mock-account-1",
+                "displayName": "Mock Checking",
+                "logoUrl": None,
+                "__typename": "Account",
+            },
+            "__typename": "RecurringTransactionItem",
+        })
+
     return {"data": {"recurringTransactionItems": items}}
 
 

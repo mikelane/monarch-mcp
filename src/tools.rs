@@ -15,6 +15,7 @@ use crate::recurring_scan::compute_scan;
 use crate::savings_rate::{compute_savings_rate, SavingsRateResult};
 use crate::spending_history::{compute_spending_history, range_for_months_count, SpendingHistory};
 use crate::spending_report::compute_spending_report;
+use crate::subscription_audit::compute_subscription_audit;
 use crate::triage::{
     build_category_suggestion_map, parse_raw_changes, partition_changeset, propose_changes,
     resolve_category_names,
@@ -324,6 +325,40 @@ impl MonarchTools {
 
         let payload = match fetch_and_compute_scan(&client).await {
             Ok(scan) => serde_json::to_value(&scan)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
+        description = "List every recurring charge ranked by annualized cost, with \
+        total monthly and yearly subscription burn. Use this to answer: 'what is my \
+        full subscription load and what's the fat to cut?' Each entry includes a \
+        monthly-equivalent amount (normalized from the stream's cadence) and the \
+        annualized cost. Approximate streams (utilities, variable charges) are \
+        included and flagged. Income streams are excluded. \
+        Pairs with recurring_scan for the anomaly lens (creeping/upcoming)."
+    )]
+    async fn subscription_audit(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_audit(&client).await {
+            Ok(audit) => serde_json::to_value(&audit)
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?,
             Err(MonarchError::SessionExpired) => {
                 json!({
@@ -862,6 +897,53 @@ async fn fetch_and_compute_scan(
     Ok(compute_scan(&items))
 }
 
+/// Compute the 12-month audit fetch window starting from the given epoch day.
+///
+/// Returns today through the last day of the month 12 months forward as
+/// ISO-8601 strings. A 12-month window guarantees that every cadence —
+/// monthly through annual — has at least one scheduled occurrence in the
+/// window, so no stream is silently absent because it doesn't renew in
+/// the current calendar month.
+///
+/// `recurringTransactionItems` returns upcoming (future) occurrences, so a
+/// forward window matches the direction the API returns data. The
+/// deduplication in `get_recurring_for_audit` (by merchant+amount) collapses
+/// a monthly stream's 12 occurrences to one entry, so widening the window is
+/// safe: a monthly stream still appears once, a yearly stream now appears once.
+///
+/// See ADR 0015 Decision 7.
+fn audit_window_for_day(day: i64) -> (String, String) {
+    let (year, month, dom) = epoch_days_to_ymd(day);
+    let start = format!("{year:04}-{month:02}-{dom:02}");
+    // Advance 12 months forward for the end month.
+    let mut ey = year;
+    let mut em = month;
+    for _ in 0..12 {
+        if em == 12 {
+            ey += 1;
+            em = 1;
+        } else {
+            em += 1;
+        }
+    }
+    let last_day = days_in_month(ey, em);
+    let end = format!("{ey:04}-{em:02}-{last_day:02}");
+    (start, end)
+}
+
+async fn fetch_and_compute_audit(
+    client: &MonarchClient,
+) -> Result<crate::subscription_audit::AuditResult, MonarchError> {
+    // Use a 12-month forward window so every cadence (monthly through annual)
+    // has at least one occurrence. A single-month window omits yearly,
+    // quarterly, and semiannual streams that don't renew this month (ADR 0015).
+    let (audit_start, audit_end) = audit_window_for_day(today_epoch_day());
+    let items = client
+        .get_recurring_for_audit(&audit_start, &audit_end)
+        .await?;
+    Ok(compute_subscription_audit(&items))
+}
+
 async fn fetch_and_compute_inspection(
     client: &MonarchClient,
     params: InspectTransactionsParams,
@@ -1127,7 +1209,7 @@ impl ServerHandler for MonarchTools {
              spending_report, budget_review, spending_history, savings_rate, \
              triage_uncategorized, inspect_transactions, apply_changeset, \
              progress_vs_goals, cashflow_forecast, net_worth_trend, recurring_scan, \
-             account_inventory, asset_allocation."
+             subscription_audit, account_inventory, asset_allocation."
                     .to_string(),
             )
     }
@@ -1670,5 +1752,67 @@ mod tests {
             msg.contains("end_date"),
             "Error message should mention end_date, got: {msg:?}"
         );
+    }
+
+    // --- audit_window_for_day ---
+
+    #[test]
+    fn audit_window_starts_today_and_ends_12_months_forward() {
+        // 2026-06-10: start = 2026-06-10, end = last day of 2027-06 = 2027-06-30
+        let (start, end) = audit_window_for_day(day("2026-06-10"));
+        assert_eq!(start, "2026-06-10");
+        assert_eq!(end, "2027-06-30");
+    }
+
+    #[test]
+    fn audit_window_spans_at_least_12_months() {
+        // The end date must be at least 12 months after the start date.
+        // Use the first day of a month for easy arithmetic.
+        let start_day = day("2026-01-01");
+        let (start, end) = audit_window_for_day(start_day);
+        assert_eq!(start, "2026-01-01");
+        // 12 months forward from January = January of next year, last day = 2027-01-31
+        assert_eq!(end, "2027-01-31");
+
+        // Parse end and verify it is >= 12 calendar months after start.
+        let end_day = parse_iso_date_to_epoch_day(&end).unwrap();
+        // 12 months = at least 365 days
+        assert!(
+            end_day - start_day >= 365,
+            "audit window must span at least 365 days, got {}",
+            end_day - start_day
+        );
+    }
+
+    #[test]
+    fn audit_window_crosses_year_boundary_correctly() {
+        // 2026-09-15: 12 months forward → end of 2027-09 = 2027-09-30
+        let (start, end) = audit_window_for_day(day("2026-09-15"));
+        assert_eq!(start, "2026-09-15");
+        assert_eq!(end, "2027-09-30");
+    }
+
+    #[test]
+    fn audit_window_handles_december_start() {
+        // 2026-12-01: 12 months forward → end of 2027-12 = 2027-12-31
+        let (start, end) = audit_window_for_day(day("2026-12-01"));
+        assert_eq!(start, "2026-12-01");
+        assert_eq!(end, "2027-12-31");
+    }
+
+    #[test]
+    fn audit_window_end_has_correct_last_day_for_february() {
+        // 2026-02-15: 12 months forward → end of 2027-02 = 2027-02-28 (not leap year)
+        let (start, end) = audit_window_for_day(day("2026-02-15"));
+        assert_eq!(start, "2026-02-15");
+        assert_eq!(end, "2027-02-28");
+    }
+
+    #[test]
+    fn audit_window_end_has_correct_last_day_for_leap_february() {
+        // 2027-02-01: 12 months forward → end of 2028-02 = 2028-02-29 (leap year)
+        let (start, end) = audit_window_for_day(day("2027-02-01"));
+        assert_eq!(start, "2027-02-01");
+        assert_eq!(end, "2028-02-29");
     }
 }

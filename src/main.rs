@@ -25,6 +25,7 @@ mod recurring_scan;
 mod savings_rate;
 mod spending_history;
 mod spending_report;
+mod subscription_audit;
 mod tools;
 mod triage;
 
