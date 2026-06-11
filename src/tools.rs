@@ -1136,11 +1136,10 @@ async fn fetch_and_compute_retirement_readiness(
 
     // Annualise: (true_spending_over_window / n_months) * 12
     let window_true_spending = compute_true_spending(&transactions);
-    let annual_baseline_spend = if n_months > 0 {
-        (window_true_spending / f64::from(n_months)) * 12.0
-    } else {
-        0.0
-    };
+    // SAFETY: n_months is clamp(1, 24) at line 1120, so it is always >= 1.
+    // This division can never divide by zero. The clamp is the guard; no runtime
+    // branch is needed.
+    let annual_baseline_spend = (window_true_spending / f64::from(n_months)) * 12.0;
 
     Ok(compute_retirement_readiness(
         invested_assets,
