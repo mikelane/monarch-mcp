@@ -1,6 +1,7 @@
 //! Tool registry — registers the four compound tool names for `tools/list`.
 
 use crate::account_inventory::compute_account_inventory;
+use crate::budget_review::compute_budget_review;
 use crate::cashflow_forecast::compute_forecast;
 use crate::client::MonarchClient;
 use crate::error::MonarchError;
@@ -396,6 +397,38 @@ impl MonarchTools {
 
         let payload = match fetch_and_compute_inventory(&client).await {
             Ok(inventory) => serde_json::to_value(&inventory)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
+        description = "Show mid-month budget pacing per expense category: how much of each \
+        category's budget has been spent relative to how far through the month we are. \
+        Returns per-category pace_status (under/on_track/over/over_budget), budget, spent, \
+        remaining, and a rollup with totals and counts. Use this during the month to catch \
+        categories tracking hot before they go over budget."
+    )]
+    async fn budget_review(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_budget_review(&client).await {
+            Ok(review) => serde_json::to_value(&review)
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?,
             Err(MonarchError::SessionExpired) => {
                 json!({
@@ -843,6 +876,25 @@ async fn fetch_and_compute_inventory(
     Ok(compute_account_inventory(&accounts))
 }
 
+async fn fetch_and_compute_budget_review(
+    client: &MonarchClient,
+) -> Result<crate::budget_review::BudgetReview, MonarchError> {
+    let today_day = today_epoch_day();
+    let (cur_start, cur_end) = current_month_range_for_day(today_day);
+    let (year, month, today_day_of_month) = epoch_days_to_ymd(today_day);
+    let dim = days_in_month(year, month);
+
+    let budgets = client.get_budgets(&cur_start, &cur_end).await?;
+    let transactions = fetch_current_month_transactions(client, &cur_start, &cur_end).await?;
+
+    Ok(compute_budget_review(
+        &budgets,
+        &transactions,
+        today_day_of_month,
+        dim,
+    ))
+}
+
 async fn fetch_and_compute_savings_rate(
     client: &MonarchClient,
     params: SavingsRateParams,
@@ -1029,9 +1081,10 @@ impl ServerHandler for MonarchTools {
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
                 "Monarch Money budgeting advisor. Tools: financial_overview, \
-             spending_report, spending_history, savings_rate, triage_uncategorized, \
-             inspect_transactions, apply_changeset, progress_vs_goals, \
-             cashflow_forecast, net_worth_trend, recurring_scan, account_inventory."
+             spending_report, budget_review, spending_history, savings_rate, \
+             triage_uncategorized, inspect_transactions, apply_changeset, \
+             progress_vs_goals, cashflow_forecast, net_worth_trend, recurring_scan, \
+             account_inventory."
                     .to_string(),
             )
     }
