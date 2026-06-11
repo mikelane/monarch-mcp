@@ -84,7 +84,7 @@ pub struct RetirementReadiness {
 /// (which also includes `RealEstate`). For SWR calculations, primary-residence
 /// real estate is illiquid and excluded from the drawdown portfolio per
 /// standard financial planning convention (ADR 0016).
-pub(crate) fn invested_financial_accounts(accounts: &[Account]) -> Vec<&Account> {
+pub fn invested_financial_accounts(accounts: &[Account]) -> Vec<&Account> {
     accounts
         .iter()
         .filter(|a| {
