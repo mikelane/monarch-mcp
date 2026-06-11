@@ -177,26 +177,21 @@ pub fn compute_savings_rate(
 ) -> SavingsRateResult {
     let month_labels = enumerate_months_in_range(range_start, range_end);
 
-    // Group transactions by their YYYY-MM bucket.
-    let mut bucket_map: HashMap<String, Vec<&Transaction>> = HashMap::new();
+    // Group transactions by their YYYY-MM bucket (owned, not refs).
+    let mut bucket_map: HashMap<String, Vec<Transaction>> = HashMap::new();
     for txn in transactions {
         if let Some(bucket) = month_bucket(&txn.date) {
             if month_labels.contains(&bucket) {
-                bucket_map.entry(bucket).or_default().push(txn);
+                bucket_map.entry(bucket).or_default().push(txn.clone());
             }
         }
     }
 
-    let empty: Vec<&Transaction> = vec![];
     let mut months: Vec<MonthlySavings> = month_labels
         .into_iter()
         .map(|label| {
-            let refs: &[&Transaction] = bucket_map
-                .get(&label)
-                .map(|v| v.as_slice())
-                .unwrap_or(empty.as_slice());
-            let txns: Vec<Transaction> = refs.iter().map(|t| (*t).clone()).collect();
-            build_monthly_savings(label, &txns)
+            let txns = bucket_map.get(&label).map_or(&[][..], Vec::as_slice);
+            build_monthly_savings(label, txns)
         })
         .collect();
 
@@ -561,6 +556,11 @@ mod tests {
         assert!(
             rate < 0.0,
             "rate must be negative when spending > income, got {rate}"
+        );
+        // Pin exact value: -2000/3000*100 = -66.666...%
+        assert!(
+            (rate - (-2000.0 / 3000.0 * 100.0)).abs() < 0.001,
+            "expected -66.67%, got {rate}"
         );
     }
 
