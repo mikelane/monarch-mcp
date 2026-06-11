@@ -1217,14 +1217,16 @@ impl MonarchClient {
                     .unwrap_or_else(|| "Unknown".to_string());
                 // Key on merchant + stream_amount for dedup (same stream, same expected amount).
                 let dedup_key = format!("{}:{}", merchant_name, r.stream.amount.to_bits());
-                if seen_streams.contains(&dedup_key) {
+                // HashSet::insert returns false if the key already existed, avoiding a second lookup.
+                if !seen_streams.insert(dedup_key) {
                     return None;
                 }
-                seen_streams.insert(dedup_key);
                 Some(crate::subscription_audit::SubscriptionAuditItem {
                     merchant: merchant_name,
                     stream_amount: r.stream.amount,
-                    frequency: r.stream.frequency.clone(),
+                    // Move frequency string instead of cloning; r is owned and frequency is not
+                    // used after this point in the stream construction.
+                    frequency: r.stream.frequency,
                     is_approximate: r.stream.is_approximate,
                 })
             })
