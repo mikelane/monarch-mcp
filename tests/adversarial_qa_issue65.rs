@@ -219,6 +219,15 @@ fn probe_true_spending_agrees_with_spending_history_incl_refund() {
         "TRUST VIOLATION: savings_rate true_spending {sr_spend} != \
          spending_history total_true_spending {sh_spend}"
     );
+    // Pin the ABSOLUTE value too: agreement alone would still pass if BOTH tools
+    // shared a magnitude bug (e.g. both netting the +50 refund to 4450). The -4500
+    // charge contributes 4500; the +50 refund in an expense category contributes
+    // ZERO magnitude (compute_true_spending: (-amount).max(0.0) = 0 for +50). So the
+    // correct true_spending is exactly 4500.
+    assert!(
+        (sr_spend - 4500.0).abs() < 1e-9,
+        "expected true_spending 4500 (charge 4500, refund nets 0 magnitude), got {sr_spend}"
+    );
     // The refund must NOT be counted as income (income group only).
     assert_eq!(
         sr.months[0].income, 6000.0,

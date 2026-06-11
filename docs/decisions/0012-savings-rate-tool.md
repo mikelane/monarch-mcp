@@ -100,7 +100,7 @@ Top-level fields also include `range_start`, `range_end`, and
 ### (d) Range resolution reuses spending_history helpers
 
 `savings_rate` uses the same `resolve_history_range` and `range_for_months_count`
-helpers as `spending_history`. The default window is the last 3 complete calendar
+helpers as `spending_history`. The default window is the last 6 complete calendar
 months (the current partial month is excluded). The range can be overridden via
 `start_date`/`end_date` or shortened via `months`.
 
