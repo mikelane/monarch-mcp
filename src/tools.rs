@@ -1,6 +1,7 @@
 //! Tool registry — registers the four compound tool names for `tools/list`.
 
 use crate::account_inventory::compute_account_inventory;
+use crate::asset_allocation::compute_asset_allocation;
 use crate::budget_review::compute_budget_review;
 use crate::cashflow_forecast::compute_forecast;
 use crate::client::MonarchClient;
@@ -397,6 +398,41 @@ impl MonarchTools {
 
         let payload = match fetch_and_compute_inventory(&client).await {
             Ok(inventory) => serde_json::to_value(&inventory)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
+        description = "Split net worth by asset class: equities (all brokerage accounts — \
+        401k, Roth, taxable), cash (depository), real_estate, crypto, other_assets (vehicles), \
+        and liabilities. Each class shows its dollar total and percent of gross assets. \
+        Includes gross_assets, total_liabilities, and net_worth rollup. \
+        Note: Monarch does not expose per-holding data, so equity vs. bond breakdown within \
+        an account is not available — all brokerage accounts are classified as equities. \
+        Unrecognized account subtypes are bucketed as 'other' and flagged. \
+        Use as the asset-class lens alongside account_inventory (the tax-treatment lens)."
+    )]
+    async fn asset_allocation(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_allocation(&client).await {
+            Ok(allocation) => serde_json::to_value(&allocation)
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?,
             Err(MonarchError::SessionExpired) => {
                 json!({
@@ -876,6 +912,13 @@ async fn fetch_and_compute_inventory(
     Ok(compute_account_inventory(&accounts))
 }
 
+async fn fetch_and_compute_allocation(
+    client: &MonarchClient,
+) -> Result<crate::asset_allocation::AssetAllocation, MonarchError> {
+    let accounts = client.get_accounts().await?;
+    Ok(compute_asset_allocation(&accounts))
+}
+
 async fn fetch_and_compute_budget_review(
     client: &MonarchClient,
 ) -> Result<crate::budget_review::BudgetReview, MonarchError> {
@@ -1084,7 +1127,7 @@ impl ServerHandler for MonarchTools {
              spending_report, budget_review, spending_history, savings_rate, \
              triage_uncategorized, inspect_transactions, apply_changeset, \
              progress_vs_goals, cashflow_forecast, net_worth_trend, recurring_scan, \
-             account_inventory."
+             account_inventory, asset_allocation."
                     .to_string(),
             )
     }
