@@ -212,6 +212,104 @@ fn clean_approximate_included_and_flagged() {
 }
 
 // ---------------------------------------------------------------------------
+// FINDING 12 (cadence coverage): the semiannual (1/6) arm was previously
+// untested. $120/semiannual must normalize to $20/month → $240/year.
+// A mutation to the 1.0/6.0 factor would otherwise survive.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn semiannual_cadence_normalizes_to_one_sixth() {
+    let items = vec![item("Pass", -120.0, "semiannual", false)];
+    let result = compute_subscription_audit(&items);
+    assert!(
+        (result.subscriptions[0].monthly_amount - 20.0).abs() < 0.01,
+        "semiannual $120 must be $20/month, got {}",
+        result.subscriptions[0].monthly_amount
+    );
+    assert!(
+        (result.subscriptions[0].annualized_amount - 240.0).abs() < 0.01,
+        "semiannual $120 must annualize to $240, got {}",
+        result.subscriptions[0].annualized_amount
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FINDING 13 (alias coverage): each documented cadence alias must resolve to
+// its canonical factor. A mutation removing an alias from a match arm would
+// otherwise survive because no test exercises the alias spelling.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn annually_alias_matches_yearly_factor() {
+    let result = compute_subscription_audit(&[item("NewsCo", -120.0, "annually", false)]);
+    assert!(
+        (result.subscriptions[0].monthly_amount - 10.0).abs() < 0.01,
+        "annually must match yearly (1/12) → $10/month, got {}",
+        result.subscriptions[0].monthly_amount
+    );
+}
+
+#[test]
+fn every_two_weeks_alias_matches_biweekly_factor() {
+    let result = compute_subscription_audit(&[item("Svc", -100.0, "every_two_weeks", false)]);
+    let expected = 100.0 * 26.0 / 12.0;
+    assert!(
+        (result.subscriptions[0].monthly_amount - expected).abs() < 0.01,
+        "every_two_weeks must match biweekly (26/12), got {}",
+        result.subscriptions[0].monthly_amount
+    );
+}
+
+#[test]
+fn every_three_months_alias_matches_quarterly_factor() {
+    let result = compute_subscription_audit(&[item("Mag", -90.0, "every_three_months", false)]);
+    assert!(
+        (result.subscriptions[0].monthly_amount - 30.0).abs() < 0.01,
+        "every_three_months must match quarterly (1/3) → $30/month, got {}",
+        result.subscriptions[0].monthly_amount
+    );
+}
+
+#[test]
+fn twice_a_year_alias_matches_semiannual_factor() {
+    let result = compute_subscription_audit(&[item("Pass", -120.0, "twice_a_year", false)]);
+    assert!(
+        (result.subscriptions[0].monthly_amount - 20.0).abs() < 0.01,
+        "twice_a_year must match semiannual (1/6) → $20/month, got {}",
+        result.subscriptions[0].monthly_amount
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FINDING 14 (tiebreaker determinism): the secondary cadence tiebreaker
+// (.then_with(|| a.cadence.cmp(&b.cadence))) was unpinned. When merchant AND
+// annualized cost are equal, cadence ascending decides order. A mutation
+// dropping that arm would survive without this test.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn equal_merchant_and_cost_breaks_tie_by_cadence_ascending() {
+    // Both annualize to $120/year for the SAME merchant: "monthly" $10 vs "yearly" $120.
+    // Input order puts "yearly" first to prove the sort (not input order) decides.
+    let items = vec![
+        item("SameCo", -120.0, "yearly", false),
+        item("SameCo", -10.0, "monthly", false),
+    ];
+    let result = compute_subscription_audit(&items);
+    assert!(
+        (result.subscriptions[0].annualized_amount - result.subscriptions[1].annualized_amount)
+            .abs()
+            < 0.01,
+        "precondition: both streams annualize to the same cost"
+    );
+    assert_eq!(
+        result.subscriptions[0].cadence, "monthly",
+        "tie on merchant+cost must break by cadence ascending (monthly < yearly)"
+    );
+    assert_eq!(result.subscriptions[1].cadence, "yearly");
+}
+
+// ---------------------------------------------------------------------------
 // FINDING 11 (BUG): single-month fetch window drops non-monthly streams.
 //
 // The handler `fetch_and_compute_audit` fetches via
