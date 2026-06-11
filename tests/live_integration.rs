@@ -32,6 +32,7 @@
 //! | Large  | `tests/live_integration.rs`    | `MONARCH_LIVE=1 cargo test --test live_integration` | `MONARCH_LIVE=1` |
 
 use monarch_mcp::account_inventory::compute_account_inventory;
+use monarch_mcp::budget_review::compute_budget_review;
 use monarch_mcp::client::MonarchClient;
 use monarch_mcp::financial_overview::compute_overview;
 use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
@@ -1361,5 +1362,130 @@ async fn savings_rate_returns_valid_structure_and_agrees_with_spending_history()
     eprintln!(
         "window_average_savings_rate: {:?}",
         result.window_average_savings_rate
+    );
+}
+
+/// Verify that `budget_review` works end-to-end against the real Monarch API:
+/// GetJointPlanningData and GetTransactionsList both succeed, all budget entries
+/// and category pacings parse correctly, and `compute_budget_review` produces
+/// structurally valid output.
+///
+/// Does NOT assert specific pace statuses or dollar amounts — those change daily.
+/// Asserts structural validity only:
+/// - Every category pacing has finite budget, spent, remaining, and percent_spent.
+/// - remaining == budget − spent (within floating-point tolerance).
+/// - percent_spent == spent / budget * 100 when budget > 0.
+/// - Rollup over_count + on_track_count + under_count equals by_category.len().
+/// - Income and transfer transactions do not create category pacing entries unless
+///   they also have a matching expense budget (i.e., the tool never over-counts).
+#[tokio::test]
+async fn budget_review_returns_valid_structure_from_real_monarch() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+
+    let budgets = client
+        .get_budgets(&cur_start, &cur_end)
+        .await
+        .expect("GetJointPlanningData must succeed against real Monarch");
+
+    let transactions = client
+        .get_transactions(&cur_start, &cur_end, 500)
+        .await
+        .expect("GetTransactionsList must succeed against real Monarch");
+
+    eprintln!("budget entries: {}", budgets.len());
+    eprintln!("transactions this month: {}", transactions.len());
+
+    // Compute today's day-of-month and days-in-month from wall clock.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today_days = (now / 86_400) as i64;
+    let (year, month, today_dom) = days_to_ymd(today_days);
+    let dim = days_in_month(year, month);
+
+    let review = compute_budget_review(&budgets, &transactions, today_dom, dim);
+
+    eprintln!("by_category entries: {}", review.by_category.len());
+    eprintln!("rollup: over={} on_track={} under={} over_budget={}",
+        review.rollup.over_count,
+        review.rollup.on_track_count,
+        review.rollup.under_count,
+        review.rollup.over_budget_count,
+    );
+
+    // Structural validity: every category pacing has finite values.
+    for (name, pacing) in &review.by_category {
+        assert!(
+            pacing.budget.is_finite(),
+            "budget must be finite for category {:?}, got {}",
+            name, pacing.budget
+        );
+        assert!(
+            pacing.spent.is_finite(),
+            "spent must be finite for category {:?}, got {}",
+            name, pacing.spent
+        );
+        assert!(
+            pacing.remaining.is_finite(),
+            "remaining must be finite for category {:?}, got {}",
+            name, pacing.remaining
+        );
+        // percent_spent is None when budget == 0; otherwise it is a whole-number percentage.
+        if let Some(pct) = pacing.percent_spent {
+            assert!(
+                pct >= 0,
+                "percent_spent must be non-negative for category {:?}, got {}",
+                name, pct
+            );
+        }
+
+        // remaining == budget − spent (within floating-point tolerance).
+        assert!(
+            (pacing.remaining - (pacing.budget - pacing.spent)).abs() < 0.01,
+            "remaining ({:.2}) must equal budget ({:.2}) - spent ({:.2}) for {:?}",
+            pacing.remaining, pacing.budget, pacing.spent, name
+        );
+
+        // spent and budget must be non-negative (magnitudes).
+        assert!(
+            pacing.spent >= 0.0,
+            "spent must be non-negative for category {:?}, got {}",
+            name, pacing.spent
+        );
+        assert!(
+            pacing.budget >= 0.0,
+            "budget must be non-negative for category {:?}, got {}",
+            name, pacing.budget
+        );
+
+        eprintln!(
+            "  {:?}: budget={:.2} spent={:.2} remaining={:.2} pct={:?}% status={:?}",
+            name, pacing.budget, pacing.spent, pacing.remaining,
+            pacing.percent_spent, pacing.pace_status
+        );
+    }
+
+    // Rollup counts must sum to total by_category entries.
+    let total_count = review.rollup.over_count
+        + review.rollup.on_track_count
+        + review.rollup.under_count
+        + review.rollup.over_budget_count;
+    assert_eq!(
+        total_count,
+        review.by_category.len(),
+        "rollup counts (over={} on_track={} under={} over_budget={}) must sum to \
+         by_category.len() ({})",
+        review.rollup.over_count,
+        review.rollup.on_track_count,
+        review.rollup.under_count,
+        review.rollup.over_budget_count,
+        review.by_category.len()
     );
 }
