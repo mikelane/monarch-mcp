@@ -187,9 +187,13 @@ fn days_in_month(year: i64, month: u32) -> u32 {
 
 /// Convert an ISO `YYYY-MM-DD` date string to Unix epoch days.
 ///
-/// Returns `None` for unparseable inputs; callers fall back gracefully.
+/// **Test-only helper** — used to construct epoch-day inputs for unit tests
+/// inside this module without reaching into `tools.rs`.  The canonical
+/// production parser is `parse_iso_date_to_epoch_day` in `tools.rs`; both
+/// implement the same Howard Hinnant algorithm but are kept local to avoid a
+/// circular module dependency.
 #[cfg(test)]
-fn parse_iso_to_epoch_day(s: &str) -> Option<i64> {
+fn parse_date_for_test(s: &str) -> Option<i64> {
     let mut parts = s.splitn(3, '-');
     let year: i64 = parts.next()?.parse().ok()?;
     let month: i64 = parts.next()?.parse().ok()?;
@@ -581,7 +585,7 @@ mod tests {
     #[test]
     fn range_for_months_count_default_6_excludes_current_month() {
         // today = 2026-05-15; 6 complete months = Nov 2025 through Apr 2026
-        let today = parse_iso_to_epoch_day("2026-05-15").unwrap();
+        let today = parse_date_for_test("2026-05-15").unwrap();
         let (start, end) = range_for_months_count(today, 6);
         assert_eq!(start, "2025-11-01");
         assert_eq!(end, "2026-04-30");
@@ -590,7 +594,7 @@ mod tests {
     #[test]
     fn range_for_months_count_1_returns_only_prior_month() {
         // today = 2026-05-15; 1 complete month = Apr 2026
-        let today = parse_iso_to_epoch_day("2026-05-15").unwrap();
+        let today = parse_date_for_test("2026-05-15").unwrap();
         let (start, end) = range_for_months_count(today, 1);
         assert_eq!(start, "2026-04-01");
         assert_eq!(end, "2026-04-30");
@@ -599,7 +603,7 @@ mod tests {
     #[test]
     fn range_for_months_count_crosses_year_when_today_is_january() {
         // today = 2026-01-10; 3 complete months = Oct, Nov, Dec 2025
-        let today = parse_iso_to_epoch_day("2026-01-10").unwrap();
+        let today = parse_date_for_test("2026-01-10").unwrap();
         let (start, end) = range_for_months_count(today, 3);
         assert_eq!(start, "2025-10-01");
         assert_eq!(end, "2025-12-31");
@@ -832,7 +836,7 @@ mod tests {
             make_expense_txn("G6", -150.0, "Groceries", "2026-04-15"),
         ];
         // today = 2026-05-15, 6 complete months = Nov 2025 – Apr 2026
-        let today = parse_iso_to_epoch_day("2026-05-15").unwrap();
+        let today = parse_date_for_test("2026-05-15").unwrap();
         let (start, end) = range_for_months_count(today, 6);
         let history = compute_spending_history(&txns, &start, &end);
         assert_eq!(history.months.len(), 6);
@@ -932,7 +936,7 @@ mod tests {
 
     #[test]
     fn range_for_months_count_zero_clamps_to_one_month() {
-        let today = parse_iso_to_epoch_day("2026-05-15").unwrap();
+        let today = parse_date_for_test("2026-05-15").unwrap();
         // months=0 must not panic; it clamps to 1, returning the prior month
         let (start, end) = range_for_months_count(today, 0);
         assert_eq!(start, "2026-04-01");
