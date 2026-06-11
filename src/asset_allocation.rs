@@ -135,6 +135,9 @@ impl AssetClass {
     /// Investable classes: equities and real estate.
     /// Non-investable: cash (liquid buffer), crypto (speculative/separate),
     /// other_assets (illiquid), liabilities (debt), other (unknown).
+    #[allow(dead_code)]
+    // Used by retirement_readiness (#69); staged here as the single source of truth
+    // for the investable-class contract.
     pub fn is_investable(self) -> bool {
         matches!(self, AssetClass::Equities | AssetClass::RealEstate)
     }
@@ -199,6 +202,9 @@ fn classify_brokerage_asset_class(subtype: Option<&AccountSubtype>) -> (AssetCla
 ///
 /// Investable = equities + real_estate. Used by `retirement_readiness` (#69)
 /// to compute the investable portfolio total.
+#[allow(dead_code)]
+// Used by retirement_readiness (#69); staged here as the single source of truth
+// for the investable-class contract.
 pub fn investable_accounts(accounts: &[Account]) -> Vec<&Account> {
     accounts
         .iter()
@@ -243,7 +249,12 @@ pub fn compute_asset_allocation(accounts: &[Account]) -> AssetAllocation {
         .sum();
 
     let total_liabilities = *class_totals.get(CLASS_LIABILITIES).unwrap_or(&0.0);
-    let net_worth = gross_assets + total_liabilities;
+
+    // net_worth = raw signed sum of ALL account balances (matching financial_overview's computation).
+    // This ensures the ADR 0014 trust cross-check holds even when an asset class (e.g., overdrawn
+    // checking) is net-negative. The gross_assets sum is clamped for the percentage denominator
+    // (which should only include positive balances), but net_worth must be the true signed sum.
+    let net_worth: f64 = accounts.iter().map(|a| a.current_balance).sum();
 
     let classes: HashMap<String, AssetClassSummary> = class_totals
         .into_iter()
@@ -681,5 +692,36 @@ mod tests {
         assert!(!AssetClass::OtherAssets.is_investable());
         assert!(!AssetClass::Liabilities.is_investable());
         assert!(!AssetClass::Other.is_investable());
+    }
+
+    // ---------------------------------------------------------------------------
+    // RED: net_worth regression — overdrawn asset class
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn net_worth_includes_negative_asset_class_balances() {
+        // Overdrawn checking (negative cash class balance) must not vanish from net_worth.
+        let accounts = vec![
+            make_account("brokerage", Some("roth"), 100_000.0),
+            make_account("depository", Some("checking"), -2_000.0),
+        ];
+        let alloc = compute_asset_allocation(&accounts);
+
+        // Verify that gross_assets is still clamped to positive balances only
+        // (used as the percentage denominator).
+        assert!(
+            (alloc.gross_assets - 100_000.0).abs() < 0.01,
+            "gross_assets should exclude negative asset class (100000), got {}",
+            alloc.gross_assets
+        );
+
+        // But net_worth must be the signed sum of all balances, including negatives.
+        let expected_net_worth: f64 = accounts.iter().map(|a| a.current_balance).sum();
+        assert!(
+            (alloc.net_worth - expected_net_worth).abs() < 0.01,
+            "net_worth must be signed sum of all balances ({}), got {}",
+            expected_net_worth,
+            alloc.net_worth
+        );
     }
 }
