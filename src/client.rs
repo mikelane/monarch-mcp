@@ -253,6 +253,9 @@ struct RecurringStreamRaw {
     pub merchant: Option<RecurringMerchantRaw>,
     /// Monarch's expected amount for this stream (negative = outflow).
     pub amount: f64,
+    /// Cadence string from Monarch: "monthly", "yearly", "weekly", etc.
+    /// Used by subscription_audit for annualization (ADR 0015).
+    pub frequency: String,
     /// True for utility-style streams whose amount varies by design.
     #[serde(rename = "isApproximate")]
     pub is_approximate: bool,
@@ -1128,6 +1131,102 @@ impl MonarchClient {
                 amount_diff: r.amount_diff.unwrap_or(0.0),
                 is_approximate: r.stream.is_approximate,
                 is_past: r.is_past,
+            })
+            .collect())
+    }
+
+    /// Fetch recurring stream items for the subscription audit (ADR 0015).
+    ///
+    /// Uses the same `Web_GetUpcomingRecurringTransactionItems` operation as
+    /// `get_recurring_for_scan`, but maps to `SubscriptionAuditItem` which
+    /// carries `frequency` (cadence) and `stream_amount` — the fields needed
+    /// for monthly-equivalent normalization. HTTP 401 maps to `SessionExpired`.
+    ///
+    /// `is_past` is intentionally ignored: the audit wants every *stream* in
+    /// the household, not just items pending this period.
+    pub async fn get_recurring_for_audit(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<Vec<crate::subscription_audit::SubscriptionAuditItem>, MonarchError> {
+        let data = self
+            .graphql(
+                "Web_GetUpcomingRecurringTransactionItems",
+                "query Web_GetUpcomingRecurringTransactionItems(
+                  $startDate: Date!,
+                  $endDate: Date!,
+                  $filters: RecurringTransactionFilter
+                ) {
+                  recurringTransactionItems(
+                    startDate: $startDate
+                    endDate: $endDate
+                    filters: $filters
+                  ) {
+                    stream {
+                      id
+                      frequency
+                      amount
+                      isApproximate
+                      merchant {
+                        id
+                        name
+                        logoUrl
+                        __typename
+                      }
+                      __typename
+                    }
+                    date
+                    isPast
+                    transactionId
+                    amount
+                    amountDiff
+                    category { id name __typename }
+                    account { id displayName logoUrl __typename }
+                    __typename
+                  }
+                }",
+                json!({
+                    "startDate": start_date,
+                    "endDate": end_date,
+                }),
+            )
+            .await?;
+
+        let raw: Vec<RecurringTransactionItemRaw> =
+            serde_json::from_value(data["recurringTransactionItems"].clone()).map_err(|e| {
+                MonarchError::Internal(format!("parse recurring items for audit: {e}"))
+            })?;
+
+        // Deduplicate by stream: multiple items from the same stream may appear
+        // in a date window (e.g. a weekly charge appears 4–5 times per month).
+        // The audit wants one entry per *stream*, not per *occurrence*.
+        let mut seen_streams: std::collections::HashSet<String> = std::collections::HashSet::new();
+        Ok(raw
+            .into_iter()
+            .filter_map(|r| {
+                // Use merchant name + amount as stream identity key when stream id
+                // is not directly available in the mapped struct. The stream id
+                // lives in the raw struct — use merchant+amount as a proxy key
+                // because the raw stream id is not in RecurringScanItem.
+                // We re-use the stream merchant+amount as a dedup key.
+                let merchant_name = r
+                    .stream
+                    .merchant
+                    .as_ref()
+                    .map(|m| m.name.clone())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                // Key on merchant + stream_amount for dedup (same stream, same expected amount).
+                let dedup_key = format!("{}:{}", merchant_name, r.stream.amount.to_bits());
+                if seen_streams.contains(&dedup_key) {
+                    return None;
+                }
+                seen_streams.insert(dedup_key);
+                Some(crate::subscription_audit::SubscriptionAuditItem {
+                    merchant: merchant_name,
+                    stream_amount: r.stream.amount,
+                    frequency: r.stream.frequency.clone(),
+                    is_approximate: r.stream.is_approximate,
+                })
             })
             .collect())
     }

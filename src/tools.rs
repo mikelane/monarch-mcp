@@ -15,6 +15,7 @@ use crate::recurring_scan::compute_scan;
 use crate::savings_rate::{compute_savings_rate, SavingsRateResult};
 use crate::spending_history::{compute_spending_history, range_for_months_count, SpendingHistory};
 use crate::spending_report::compute_spending_report;
+use crate::subscription_audit::compute_subscription_audit;
 use crate::triage::{
     build_category_suggestion_map, parse_raw_changes, partition_changeset, propose_changes,
     resolve_category_names,
@@ -324,6 +325,40 @@ impl MonarchTools {
 
         let payload = match fetch_and_compute_scan(&client).await {
             Ok(scan) => serde_json::to_value(&scan)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Err(MonarchError::SessionExpired) => {
+                json!({
+                    "error": "Session expired — re-authenticate by running `monarch-mcp login`"
+                })
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
+        description = "List every recurring charge ranked by annualized cost, with \
+        total monthly and yearly subscription burn. Use this to answer: 'what is my \
+        full subscription load and what's the fat to cut?' Each entry includes a \
+        monthly-equivalent amount (normalized from the stream's cadence) and the \
+        annualized cost. Approximate streams (utilities, variable charges) are \
+        included and flagged. Income streams are excluded. \
+        Pairs with recurring_scan for the anomaly lens (creeping/upcoming)."
+    )]
+    async fn subscription_audit(
+        &self,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let base = std::env::var("MONARCH_BASE").ok().filter(|s| !s.is_empty());
+        let mut client = MonarchClient::new(base);
+        client.resolve_token_from_env_or_disk();
+
+        let payload = match fetch_and_compute_audit(&client).await {
+            Ok(audit) => serde_json::to_value(&audit)
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?,
             Err(MonarchError::SessionExpired) => {
                 json!({
@@ -862,6 +897,14 @@ async fn fetch_and_compute_scan(
     Ok(compute_scan(&items))
 }
 
+async fn fetch_and_compute_audit(
+    client: &MonarchClient,
+) -> Result<crate::subscription_audit::AuditResult, MonarchError> {
+    let (cur_start, cur_end) = current_month_range();
+    let items = client.get_recurring_for_audit(&cur_start, &cur_end).await?;
+    Ok(compute_subscription_audit(&items))
+}
+
 async fn fetch_and_compute_inspection(
     client: &MonarchClient,
     params: InspectTransactionsParams,
@@ -1127,7 +1170,7 @@ impl ServerHandler for MonarchTools {
              spending_report, budget_review, spending_history, savings_rate, \
              triage_uncategorized, inspect_transactions, apply_changeset, \
              progress_vs_goals, cashflow_forecast, net_worth_trend, recurring_scan, \
-             account_inventory, asset_allocation."
+             subscription_audit, account_inventory, asset_allocation."
                     .to_string(),
             )
     }
