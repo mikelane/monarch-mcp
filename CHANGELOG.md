@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/mikelane/monarch-mcp/compare/v0.4.1...v0.4.2) - 2026-06-11
+
+### Added
+
+- add retirement_readiness tool for SWR coverage vs baseline spend ([#74](https://github.com/mikelane/monarch-mcp/pull/74))
+- add subscription_audit tool for ranked annualized recurring burn ([#73](https://github.com/mikelane/monarch-mcp/pull/73))
+- add asset_allocation tool for net worth by asset class ([#72](https://github.com/mikelane/monarch-mcp/pull/72))
+- add budget_review tool for mid-month budget pacing per category ([#71](https://github.com/mikelane/monarch-mcp/pull/71))
+- add savings_rate tool for monthly income vs true-spending savings rate ([#70](https://github.com/mikelane/monarch-mcp/pull/70))
+
 ## [0.4.1](https://github.com/mikelane/monarch-mcp/compare/v0.4.0...v0.4.1) - 2026-06-11
 
 ### Documentation
