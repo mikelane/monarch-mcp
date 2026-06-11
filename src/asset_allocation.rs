@@ -477,6 +477,35 @@ mod tests {
         assert!(investable.is_empty());
     }
 
+    #[test]
+    fn investable_accounts_excludes_unrecognized_account() {
+        // #69 reads the investable portfolio via investable_accounts(). An account
+        // with an unrecognized type must classify as `other` AND be excluded from
+        // the investable set — otherwise unknown holdings would silently leak into
+        // the retirement-readiness portfolio. This joins the classification path to
+        // the is_investable() contract end-to-end, not just per-enum-variant.
+        let unknown = make_account("collectible", Some("art"), 5_000.0);
+        let (class, recognized) = classify_asset_class(&unknown);
+        assert_eq!(
+            class,
+            AssetClass::Other,
+            "unknown type must classify as other"
+        );
+        assert!(!recognized, "unknown type must be flagged unrecognized");
+
+        let accounts = vec![make_account("brokerage", Some("roth"), 100_000.0), unknown];
+        let investable = investable_accounts(&accounts);
+        assert_eq!(
+            investable.len(),
+            1,
+            "only the brokerage account is investable; the unrecognized account must not leak in"
+        );
+        assert_eq!(
+            investable[0].account_type.name, "brokerage",
+            "the single investable account must be the brokerage, not the unrecognized one"
+        );
+    }
+
     // ---------------------------------------------------------------------------
     // RED: compute_asset_allocation tests — basic classification
     // ---------------------------------------------------------------------------
@@ -536,6 +565,59 @@ mod tests {
         assert!(
             (re_pct - 10.0).abs() < 0.01,
             "real_estate pct should be 10%, got {re_pct}"
+        );
+    }
+
+    #[test]
+    fn asset_class_percentages_sum_to_one_hundred() {
+        // The sum-to-100% invariant guarded only by the gated live test must also
+        // hold hermetically. Uneven splits (not clean round numbers) catch any
+        // off-by-denominator mutation: 33000+17000+50000 = 100000 gross.
+        let accounts = vec![
+            make_account("brokerage", Some("roth"), 33_000.0),
+            make_account("depository", Some("checking"), 17_000.0),
+            make_account("real_estate", Some("house"), 50_000.0),
+        ];
+        let alloc = compute_asset_allocation(&accounts);
+        let pct_sum: f64 = alloc
+            .classes
+            .values()
+            .filter_map(|s| s.percent_of_assets)
+            .sum();
+        assert!(
+            (pct_sum - 100.0).abs() < 0.01,
+            "per-class percent_of_assets must sum to ~100% of gross_assets, got {pct_sum}"
+        );
+    }
+
+    #[test]
+    fn liability_percentages_excluded_so_sum_stays_one_hundred() {
+        // With a liability present, the liabilities class contributes None to the
+        // percent sum, so the asset classes must STILL sum to exactly 100% — the
+        // liability magnitude must not dilute or inflate the denominator.
+        let accounts = vec![
+            make_account("brokerage", Some("roth"), 60_000.0),
+            make_account("depository", Some("checking"), 40_000.0),
+            make_account("credit", Some("credit_card"), -25_000.0),
+        ];
+        let alloc = compute_asset_allocation(&accounts);
+        assert!(
+            (alloc.gross_assets - 100_000.0).abs() < 0.01,
+            "gross_assets must exclude the liability, got {}",
+            alloc.gross_assets
+        );
+        assert!(
+            alloc.classes[CLASS_LIABILITIES].percent_of_assets.is_none(),
+            "liabilities must contribute None to the percent sum"
+        );
+        let pct_sum: f64 = alloc
+            .classes
+            .values()
+            .filter_map(|s| s.percent_of_assets)
+            .sum();
+        assert!(
+            (pct_sum - 100.0).abs() < 0.01,
+            "asset-class percentages must sum to 100% even with a liability present, got {pct_sum}"
         );
     }
 
@@ -654,6 +736,33 @@ mod tests {
         assert!((alloc.gross_assets - 0.0).abs() < f64::EPSILON);
         // No asset classes exist, so no percentages to check. Liabilities get None.
         assert!(alloc.classes[CLASS_LIABILITIES].percent_of_assets.is_none());
+    }
+
+    #[test]
+    fn asset_class_with_zero_gross_assets_yields_none_percent_not_nan() {
+        // An ASSET class is present (cash) but gross_assets is exactly 0 (the single
+        // depository account has a 0.0 balance). The percentage must be None, never
+        // 0.0/0.0 = NaN. This pins the divide-by-zero guard on the asset-class branch
+        // specifically — the liabilities-only case above never exercises an asset
+        // class at gross_assets == 0.
+        let accounts = vec![make_account("depository", Some("checking"), 0.0)];
+        let alloc = compute_asset_allocation(&accounts);
+        assert!(
+            (alloc.gross_assets - 0.0).abs() < f64::EPSILON,
+            "gross_assets must be 0 for a single zero-balance account, got {}",
+            alloc.gross_assets
+        );
+        let cash = &alloc.classes[CLASS_CASH];
+        assert!(
+            (cash.total - 0.0).abs() < f64::EPSILON,
+            "cash total must be 0.0, got {}",
+            cash.total
+        );
+        assert_eq!(
+            cash.percent_of_assets, None,
+            "percent_of_assets must be None (not NaN) when gross_assets is 0; got {:?}",
+            cash.percent_of_assets
+        );
     }
 
     // ---------------------------------------------------------------------------
