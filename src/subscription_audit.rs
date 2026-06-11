@@ -98,8 +98,16 @@ pub struct AuditResult {
 ///
 /// The monthly multiplier scales the stream's per-period amount to a
 /// per-month basis. See ADR 0015 for the factor table and rationale.
+///
+/// # Normalization
+/// The input is trimmed and lowercased before matching.
+/// Monarch sends lowercase strings (ADR 0003), but we normalize defensively
+/// because a silent 12x overstatement (e.g. "Yearly" falling to the monthly
+/// fallback) is a far worse failure mode than an unnecessary `.to_lowercase()`.
+// invariant: Monarch sends lowercase cadence strings (ADR 0003); we normalize
+// anyway because the silent-12x overstatement failure mode is unacceptable.
 fn cadence_to_monthly_factor(frequency: &str) -> f64 {
-    match frequency {
+    match frequency.trim().to_lowercase().as_str() {
         "monthly" => 1.0,
         "yearly" | "annually" => 1.0 / 12.0,
         "weekly" => 52.0 / 12.0,
@@ -139,10 +147,14 @@ pub fn compute_subscription_audit(items: &[SubscriptionAuditItem]) -> AuditResul
         .collect();
 
     // Sort by annualized cost descending (highest cost first).
+    // Ties are broken by merchant name ascending, then cadence ascending,
+    // so the ranking is fully deterministic regardless of input order.
     subscriptions.sort_by(|a, b| {
         b.annualized_amount
             .partial_cmp(&a.annualized_amount)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.merchant.cmp(&b.merchant))
+            .then_with(|| a.cadence.cmp(&b.cadence))
     });
 
     let total_monthly: f64 = subscriptions.iter().map(|s| s.monthly_amount).sum();

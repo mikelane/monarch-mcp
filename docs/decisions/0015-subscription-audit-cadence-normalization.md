@@ -134,6 +134,54 @@ for streams with irregular occurrence counts in a short window.
 the factor table above is exact for the cadence strings Monarch actually uses; a 30-day
 approximation introduces unnecessary error for yearly charges (365/12 ≠ 30).
 
+## Decision 7 — 12-month forward fetch window
+
+The `fetch_and_compute_audit` handler fetches recurring items using a 12-month
+forward window (today through the last day of the month 12 months from now)
+instead of the current calendar month.
+
+**Why:** `recurringTransactionItems(startDate, endDate)` returns only scheduled
+occurrences within the requested window. A yearly subscription that renews in
+November produces zero items for a June window, so it was absent from the audit
+entirely — violating the tool's stated purpose ("the household's ENTIRE recurring
+burn"). A 12-month window guarantees that every cadence — monthly through annual —
+has at least one scheduled occurrence in the window.
+
+**Safety:** The deduplication in `get_recurring_for_audit` (by merchant+amount key,
+Decision 5) collapses a monthly stream's 12 occurrences to one entry. Widening the
+window is therefore safe: a monthly stream still appears exactly once; a yearly
+stream now appears once. The compute layer (`compute_subscription_audit`) is
+unaffected — it operates on the deduplicated stream slice.
+
+**Direction:** The API returns upcoming (future) occurrences, so a forward window
+matches the data direction. The start date is today (not the first of the month)
+so only future occurrences are requested.
+
+**Reconciliation with `recurring_scan`:** `recurring_scan` continues to use the
+current calendar month window — its purpose is upcoming renewals and amount drift
+within the current period. The live integration test cross-checks that every
+outflow stream visible in the current-month scan is also present in the 12-month
+audit (the audit is a superset).
+
+## Decision 8 — Cadence string normalization
+
+The `cadence_to_monthly_factor` function normalizes the input frequency string with
+`.trim().to_lowercase()` before matching against the factor table.
+
+**Why:** Monarch sends lowercase cadence strings (ADR 0003), but defensive
+normalization prevents a silent 12x overstatement if a future schema version sends
+`"Yearly"` (capitalized) or `" yearly "` (whitespace-padded). Without normalization,
+such strings fall to the unknown→monthly fallback (factor 1.0), reporting a $120/year
+subscription as $120/month — a 12x overstatement. This failure mode is far worse than
+the negligible cost of `.to_lowercase()` on every cadence lookup.
+
+## Decision 9 — Deterministic sort tiebreaker
+
+When two streams have the same `annualized_amount`, the sort is broken by
+`merchant` ascending, then `cadence` ascending. This makes the ranking fully
+deterministic regardless of input order. Without an explicit tiebreaker, equal-cost
+streams appear in input order — stable but not user-deterministic across API calls.
+
 ## Consequences
 
 - `subscription_audit` and `recurring_scan` remain independently testable and have no
@@ -144,3 +192,8 @@ approximation introduces unnecessary error for yearly charges (365/12 ≠ 30).
 - The monthly-factor table is the single source of truth for cadence normalization. Any
   new Monarch frequency string will fall back to monthly (factor 1.0) until explicitly
   added to the match arm.
+- The 12-month window means the subscription audit now makes a slightly wider API call
+  than the recurring scan. This is intentional: the audit's purpose is the full
+  inventory, not the current period's activity.
+- The cadence normalization ensures capitalization and whitespace variants from any
+  future Monarch schema version are handled correctly without code changes.
