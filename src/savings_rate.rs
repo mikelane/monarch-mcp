@@ -219,7 +219,10 @@ fn build_monthly_savings(month: String, transactions: &[Transaction]) -> Monthly
     let income = compute_income(transactions);
     let true_spending = compute_true_spending(transactions);
     let net_savings = income - true_spending;
-    let savings_rate = if income > 0.0 {
+    // SAFETY: Monarch amounts are bounded by API constraints; this guard defends
+    // against overflow-to-inf, which would produce NaN/null in JSON. Non-finite
+    // income → None (omitted), same as zero-income, keeping the JSON contract NaN-free.
+    let savings_rate = if income > 0.0 && income.is_finite() {
         Some((net_savings / income) * 100.0)
     } else {
         None
