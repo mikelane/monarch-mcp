@@ -1,6 +1,6 @@
 [package]
 name = "monarch-mcp"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "Monarch Money MCP server — an agentic budgeting companion (read + categorize only)"
 authors = ["Mike Lane <mikelane@gmail.com>"]
