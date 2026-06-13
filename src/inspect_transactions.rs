@@ -173,6 +173,9 @@ fn matches_filter(txn: &Transaction, filter: &InspectFilter) -> bool {
 
 fn compute_summary(items: &[InspectLineItem]) -> InspectSummary {
     let total_count = items.len();
+    // SAFETY: callers currently summarize at most one month of transactions,
+    // fetched with a 500-item limit. That bounded range keeps f64 accumulation
+    // appropriate here; materially wider ranges should use integer cents.
     let mut total_inflow = 0.0_f64;
     let mut total_outflow = 0.0_f64;
 
