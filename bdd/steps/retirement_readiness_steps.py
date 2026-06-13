@@ -14,6 +14,8 @@ covers Nov 2025 – Apr 2026. Transactions are spread across those months.
 
 from __future__ import annotations
 
+import os
+
 import requests
 from behave import given, then, when
 
@@ -94,17 +96,17 @@ def _trailing_months(n: int) -> list[str]:
     survives a test-clock change without needing a manual update.
     The most recent *complete* month is always one month before the current month.
     """
-    import os
-
     monarch_now = os.environ.get("MONARCH_NOW", "")
-    if monarch_now:
-        parts = monarch_now.split("-")
-        anchor_year, anchor_month = int(parts[0]), int(parts[1])
-    else:
-        # Fallback: should not occur in the BDD suite (environment.py pins this).
+    if not monarch_now:
+        # Should not occur in the BDD suite (environment.py pins this).
         raise RuntimeError(
             "MONARCH_NOW is not set — environment.py must pin it before scenarios run"
         )
+
+    # MONARCH_NOW is always ISO "YYYY-MM-DD"; unpacking documents that shape
+    # and turns any malformed value into a clear ValueError at this boundary.
+    year_str, month_str, _day_str = monarch_now.split("-")
+    anchor_year, anchor_month = int(year_str), int(month_str)
 
     # Step back one month from the current month to get the most recent complete month.
     anchor_month -= 1
