@@ -727,15 +727,16 @@ impl MonarchClient {
             )
             .await?;
 
-        let total_count = data["allTransactions"]["totalCount"]
-            .as_u64()
-            .unwrap_or(0) as u32;
+        let total_count = data["allTransactions"]["totalCount"].as_u64().unwrap_or(0) as u32;
 
         let results = &data["allTransactions"]["results"];
         let raw: Vec<TransactionRaw> = serde_json::from_value(results.clone())
             .map_err(|e| MonarchError::Internal(format!("parse transactions: {e}")))?;
 
-        Ok((raw.into_iter().map(transaction_from_raw).collect(), total_count))
+        Ok((
+            raw.into_iter().map(transaction_from_raw).collect(),
+            total_count,
+        ))
     }
 
     /// Fetch transactions for a date range.
