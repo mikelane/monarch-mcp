@@ -2,9 +2,38 @@
 
 from __future__ import annotations
 
+import os
+
 import requests
 import tomli_w
 from behave import given, then
+
+
+def _current_and_prior_months() -> tuple[str, str]:
+    """Return (current_month, prior_month) labels derived from MONARCH_NOW.
+
+    Parses os.environ["MONARCH_NOW"] (ISO "YYYY-MM-DD") so month labels
+    survive a test-clock change without needing a manual update here.
+    Raises RuntimeError if MONARCH_NOW is not set (environment.py must pin it).
+    """
+    monarch_now = os.environ.get("MONARCH_NOW", "")
+    if not monarch_now:
+        raise RuntimeError(
+            "MONARCH_NOW is not set — environment.py must pin it before scenarios run"
+        )
+    year_str, month_str, _day_str = monarch_now.split("-")
+    year, month = int(year_str), int(month_str)
+
+    current_month = f"{year:04}-{month:02}"
+
+    prior_month_num = month - 1
+    prior_year = year
+    if prior_month_num == 0:
+        prior_month_num = 12
+        prior_year -= 1
+    prior_month = f"{prior_year:04}-{prior_month_num:02}"
+
+    return current_month, prior_month
 
 
 def _write_goals(context, goals: dict) -> None:
@@ -87,9 +116,10 @@ def step_paid_down_debt(context, amount: int):
     )
     prior_owed = current_owed + float(amount)
 
+    current_month, prior_month = _current_and_prior_months()
     snapshots = [
-        {"account_type": "credit", "month": "2026-04", "balance": -prior_owed},
-        {"account_type": "credit", "month": "2026-05", "balance": -current_owed},
+        {"account_type": "credit", "month": prior_month, "balance": -prior_owed},
+        {"account_type": "credit", "month": current_month, "balance": -current_owed},
     ]
     requests.post(
         f"{context.mock_base}/configure",
