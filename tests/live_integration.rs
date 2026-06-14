@@ -2088,3 +2088,89 @@ async fn retirement_readiness_reconciles_with_asset_allocation_and_true_spending
         eprintln!("retirement_readiness: zero spend window — coverage_ratio=None as expected");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Finding 2 (issue #33): pagination / silent server cap guard
+// ---------------------------------------------------------------------------
+
+/// Verifies that Monarch returns the full result set at limit=GRAPHQL_INT_MAX
+/// with no silent server-side cap.
+///
+/// Fetches the current month and (optionally) trailing 12 months via
+/// `get_transactions_with_count`, then asserts `results.len() == total_count`.
+/// If that assertion ever fails it means Monarch started capping the page
+/// below the true transaction count — a pagination loop must then be added
+/// to `get_transactions_with_count` (see ADR 0017).
+///
+/// DATA HYGIENE: only transaction COUNTS (integers) are printed. No amounts,
+/// merchant names, account names, balances, or dates are emitted.
+#[tokio::test]
+async fn transaction_fetch_returns_full_result_set_no_silent_cap() {
+    if !live_enabled() {
+        eprintln!("SKIP: set MONARCH_LIVE=1 to run live integration tests");
+        return;
+    }
+
+    let client = make_live_client();
+    let (cur_start, cur_end) = current_month();
+
+    // --- Current month probe ---
+    let (cur_txns, cur_total) = client
+        .get_transactions_with_count(&cur_start, &cur_end, GRAPHQL_INT_MAX)
+        .await
+        .expect("get_transactions_with_count must succeed for current month");
+
+    eprintln!(
+        "current month ({cur_start}..{cur_end}): totalCount={cur_total} results={}",
+        cur_txns.len()
+    );
+
+    assert_eq!(
+        cur_txns.len(),
+        cur_total as usize,
+        "Monarch silently capped current-month results: got {} but totalCount={}. \
+         A pagination loop is required (see ADR 0017).",
+        cur_txns.len(),
+        cur_total
+    );
+
+    // --- Trailing-12-month probe (stresses any cap at higher volumes) ---
+    // Build a date range covering the last 12 complete months plus the current
+    // partial month, to push the transaction count as high as possible.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today_days = (now_secs / 86_400) as i64;
+    let (cur_y, cur_m, _) = days_to_ymd(today_days);
+
+    // Twelve months back: subtract 12 months, wrapping year.
+    let (start_y, start_m) = if cur_m > 12 {
+        (cur_y, cur_m - 12)
+    } else {
+        (cur_y - 1, cur_m + 12 - 12)
+    };
+    // Clamp month to 1 if the subtraction yields 0 (shouldn't happen but be safe)
+    let start_m = if start_m == 0 { 1 } else { start_m };
+    let wide_start = format!("{start_y:04}-{start_m:02}-01");
+    let wide_end = cur_end.clone();
+
+    let (wide_txns, wide_total) = client
+        .get_transactions_with_count(&wide_start, &wide_end, GRAPHQL_INT_MAX)
+        .await
+        .expect("get_transactions_with_count must succeed for trailing-12-month range");
+
+    eprintln!(
+        "trailing-12-month ({wide_start}..{wide_end}): totalCount={wide_total} results={}",
+        wide_txns.len()
+    );
+
+    assert_eq!(
+        wide_txns.len(),
+        wide_total as usize,
+        "Monarch silently capped trailing-12-month results: got {} but totalCount={}. \
+         A pagination loop is required (see ADR 0017).",
+        wide_txns.len(),
+        wide_total
+    );
+}
