@@ -171,6 +171,21 @@ fn matches_filter(txn: &Transaction, filter: &InspectFilter) -> bool {
     true
 }
 
+/// Accumulate inflow, outflow, and net totals from a bounded slice of line items.
+///
+/// # Precision invariant
+///
+/// Totals are accumulated as `f64`. This is safe for the bounded use case here:
+/// `inspect_transactions` operates on the current-month date range with the
+/// `GRAPHQL_INT_MAX` fetch limit, so the number of transactions and their
+/// individual magnitudes are constrained to what a single household sees in one
+/// month. `f64` has 53 bits of mantissa (~15–16 significant decimal digits),
+/// which is more than sufficient for typical transaction amounts and counts in
+/// this range.
+///
+/// If the aggregation window were widened materially (e.g. multi-year history
+/// or an unbounded category scan), precision loss could accumulate to a visible
+/// rounding error. In that case, consider accumulating in integer cents instead.
 fn compute_summary(items: &[InspectLineItem]) -> InspectSummary {
     let total_count = items.len();
     let mut total_inflow = 0.0_f64;

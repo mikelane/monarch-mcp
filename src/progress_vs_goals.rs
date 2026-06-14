@@ -238,27 +238,38 @@ pub fn actual_paydown_from_snapshots(
     prior_month: &str,
     current_month: &str,
 ) -> Option<f64> {
-    let prior_owed: f64 = snapshots
-        .iter()
-        .filter(|s| s.month == prior_month && DEBT_TYPES.contains(&s.account_type.as_str()))
-        .map(|s| (-s.balance).max(0.0))
-        .sum();
+    struct Acc {
+        prior_owed: f64,
+        current_owed: f64,
+        has_prior: bool,
+    }
 
-    let has_prior = snapshots
-        .iter()
-        .any(|s| s.month == prior_month && DEBT_TYPES.contains(&s.account_type.as_str()));
+    let acc = snapshots.iter().fold(
+        Acc {
+            prior_owed: 0.0,
+            current_owed: 0.0,
+            has_prior: false,
+        },
+        |mut a, s| {
+            if !DEBT_TYPES.contains(&s.account_type.as_str()) {
+                return a;
+            }
+            let magnitude = (-s.balance).max(0.0);
+            if s.month == prior_month {
+                a.prior_owed += magnitude;
+                a.has_prior = true;
+            } else if s.month == current_month {
+                a.current_owed += magnitude;
+            }
+            a
+        },
+    );
 
-    if !has_prior {
+    if !acc.has_prior {
         return None;
     }
 
-    let current_owed: f64 = snapshots
-        .iter()
-        .filter(|s| s.month == current_month && DEBT_TYPES.contains(&s.account_type.as_str()))
-        .map(|s| (-s.balance).max(0.0))
-        .sum();
-
-    Some(prior_owed - current_owed)
+    Some(acc.prior_owed - acc.current_owed)
 }
 
 /// Sum the owed amount across all debt-type accounts.
