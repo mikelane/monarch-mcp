@@ -4,7 +4,7 @@ use crate::account_inventory::compute_account_inventory;
 use crate::asset_allocation::compute_asset_allocation;
 use crate::budget_review::compute_budget_review;
 use crate::cashflow_forecast::compute_forecast;
-use crate::client::MonarchClient;
+use crate::client::{MonarchClient, GRAPHQL_INT_MAX};
 use crate::error::MonarchError;
 use crate::financial_overview::compute_overview;
 use crate::goals::Goals;
@@ -34,13 +34,6 @@ use rmcp::{
 };
 use serde::Deserialize;
 use serde_json::json;
-
-/// Monarch's GraphQL `limit` argument uses a signed `Int` (32-bit), so the
-/// maximum value we can pass without overflowing is `i32::MAX` (2,147,483,647).
-/// Sending `u32::MAX` causes Monarch to return a server-side GraphQL error
-/// (see ADR 0008 and issue #47). At `i32::MAX` rows, the fetch is effectively
-/// unbounded for any real household.
-const GRAPHQL_INT_MAX: u32 = i32::MAX as u32;
 
 /// Input parameters for the `net_worth_trend` tool.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

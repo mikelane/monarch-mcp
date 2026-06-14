@@ -42,6 +42,16 @@ const DEFAULT_ORIGIN: &str = "https://app.monarch.com";
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
+/// Maximum `limit` value accepted by Monarch's `GetTransactionsList` GraphQL
+/// operation.  Monarch uses a signed 32-bit `Int` for this argument, so the
+/// ceiling is `i32::MAX` (2,147,483,647) — not `u32::MAX` (see ADR 0008).
+/// At this limit the fetch is effectively unbounded for any real household.
+///
+/// Exported so that `tools.rs` handlers and large integration tests share one
+/// source of truth — a cap-mismatch regression will cause the truncation-guard
+/// live test to fail (see ADR 0017).
+pub const GRAPHQL_INT_MAX: u32 = i32::MAX as u32;
+
 // ---------------------------------------------------------------------------
 // Internal domain types — consumed by compute/aggregation functions.
 //

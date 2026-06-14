@@ -34,7 +34,7 @@
 use monarch_mcp::account_inventory::compute_account_inventory;
 use monarch_mcp::asset_allocation::compute_asset_allocation;
 use monarch_mcp::budget_review::compute_budget_review;
-use monarch_mcp::client::MonarchClient;
+use monarch_mcp::client::{MonarchClient, GRAPHQL_INT_MAX};
 use monarch_mcp::financial_overview::compute_overview;
 use monarch_mcp::inspect_transactions::{compute_inspection, InspectFilter};
 use monarch_mcp::net_worth_trend::compute_trend;
@@ -787,8 +787,10 @@ async fn financial_overview_and_spending_report_agree_on_true_spending() {
         .await
         .expect("GetAccounts must succeed against real Monarch");
 
+    // Use the same limit as production (GRAPHQL_INT_MAX) so a future handler
+    // cap-mismatch regression causes this test to fail (Finding 1, issue #33).
     let transactions = client
-        .get_transactions(&cur_start, &cur_end, 500)
+        .get_transactions(&cur_start, &cur_end, GRAPHQL_INT_MAX)
         .await
         .expect("GetTransactionsList must succeed against real Monarch");
 
