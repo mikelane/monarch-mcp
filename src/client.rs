@@ -42,6 +42,16 @@ const DEFAULT_ORIGIN: &str = "https://app.monarch.com";
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
+/// Maximum `limit` value accepted by Monarch's `GetTransactionsList` GraphQL
+/// operation.  Monarch uses a signed 32-bit `Int` for this argument, so the
+/// ceiling is `i32::MAX` (2,147,483,647) — not `u32::MAX` (see ADR 0008).
+/// At this limit the fetch is effectively unbounded for any real household.
+///
+/// Exported so that `tools.rs` handlers and large integration tests share one
+/// source of truth — a cap-mismatch regression will cause the truncation-guard
+/// live test to fail (see ADR 0017).
+pub const GRAPHQL_INT_MAX: u32 = i32::MAX as u32;
+
 // ---------------------------------------------------------------------------
 // Internal domain types — consumed by compute/aggregation functions.
 //
@@ -659,38 +669,48 @@ impl MonarchClient {
         Ok(raw.into_iter().map(Account::from).collect())
     }
 
-    /// Fetch transactions for a date range.
+    /// Monarch's `GetTransactionsList` GraphQL query string — shared by
+    /// [`get_transactions`] and [`get_transactions_with_count`].
+    const GET_TRANSACTIONS_QUERY: &'static str =
+        "query GetTransactionsList($offset: Int, $limit: Int, $filters: TransactionFilterInput, $orderBy: TransactionOrdering) {
+          allTransactions(filters: $filters) {
+            totalCount
+            results(offset: $offset, limit: $limit, orderBy: $orderBy) {
+              id
+              amount
+              date
+              needsReview
+              notes
+              category { id name group { type __typename } __typename }
+              merchant { name id __typename }
+              account { id displayName __typename }
+              tags { id name color order __typename }
+              __typename
+            }
+            __typename
+          }
+        }";
+
+    /// Fetch transactions for a date range, returning both the results and
+    /// the server-reported `totalCount`.
+    ///
+    /// The `totalCount` is Monarch's authoritative count of matching
+    /// transactions. When `results.len() == total_count`, the single-page
+    /// fetch captured everything. When `results.len() < total_count`, the
+    /// server silently capped the page — a pagination loop is required (see
+    /// ADR 0017).
     ///
     /// `start_date` and `end_date` are ISO-8601 strings (`YYYY-MM-DD`).
-    /// The real Monarch field is `allTransactions.results[]`, not a top-level
-    /// `transactions` field (see ADR 0002).
-    pub async fn get_transactions(
+    pub async fn get_transactions_with_count(
         &self,
         start_date: &str,
         end_date: &str,
         limit: u32,
-    ) -> Result<Vec<Transaction>, MonarchError> {
+    ) -> Result<(Vec<Transaction>, u32), MonarchError> {
         let data = self
             .graphql(
                 "GetTransactionsList",
-                "query GetTransactionsList($offset: Int, $limit: Int, $filters: TransactionFilterInput, $orderBy: TransactionOrdering) {
-                  allTransactions(filters: $filters) {
-                    totalCount
-                    results(offset: $offset, limit: $limit, orderBy: $orderBy) {
-                      id
-                      amount
-                      date
-                      needsReview
-                      notes
-                      category { id name group { type __typename } __typename }
-                      merchant { name id __typename }
-                      account { id displayName __typename }
-                      tags { id name color order __typename }
-                      __typename
-                    }
-                    __typename
-                  }
-                }",
+                Self::GET_TRANSACTIONS_QUERY,
                 json!({
                     "offset": 0,
                     "limit": limit,
@@ -707,11 +727,36 @@ impl MonarchClient {
             )
             .await?;
 
+        let total_count = data["allTransactions"]["totalCount"].as_u64().unwrap_or(0) as u32;
+
         let results = &data["allTransactions"]["results"];
         let raw: Vec<TransactionRaw> = serde_json::from_value(results.clone())
             .map_err(|e| MonarchError::Internal(format!("parse transactions: {e}")))?;
 
-        Ok(raw.into_iter().map(transaction_from_raw).collect())
+        Ok((
+            raw.into_iter().map(transaction_from_raw).collect(),
+            total_count,
+        ))
+    }
+
+    /// Fetch transactions for a date range.
+    ///
+    /// `start_date` and `end_date` are ISO-8601 strings (`YYYY-MM-DD`).
+    /// The real Monarch field is `allTransactions.results[]`, not a top-level
+    /// `transactions` field (see ADR 0002).
+    ///
+    /// Delegates to [`get_transactions_with_count`] and discards `totalCount`.
+    /// Use [`get_transactions_with_count`] directly when you need to verify
+    /// that the server returned the full result set (truncation guard).
+    pub async fn get_transactions(
+        &self,
+        start_date: &str,
+        end_date: &str,
+        limit: u32,
+    ) -> Result<Vec<Transaction>, MonarchError> {
+        self.get_transactions_with_count(start_date, end_date, limit)
+            .await
+            .map(|(txns, _)| txns)
     }
 
     /// Fetch transactions flagged as needing review.
@@ -1418,6 +1463,123 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // -----------------------------------------------------------------------
+    // get_transactions_with_count: parses totalCount alongside results
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_transactions_with_count_returns_results_and_total_count() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "allTransactions": {
+                        "totalCount": 3,
+                        "results": [
+                            {
+                                "id": "txn-a",
+                                "amount": -10.00,
+                                "date": "2026-06-01",
+                                "needsReview": false,
+                                "notes": "",
+                                "category": {"id": "c1", "name": "Groceries",
+                                    "group": {"type": "expense", "__typename": "CategoryGroup"},
+                                    "__typename": "Category"},
+                                "merchant": {"name": "Store A", "id": "m1", "__typename": "Merchant"},
+                                "account": {"id": "a1", "displayName": "Checking", "__typename": "Account"},
+                                "tags": [],
+                                "__typename": "Transaction"
+                            },
+                            {
+                                "id": "txn-b",
+                                "amount": -20.00,
+                                "date": "2026-06-02",
+                                "needsReview": false,
+                                "notes": "",
+                                "category": {"id": "c1", "name": "Groceries",
+                                    "group": {"type": "expense", "__typename": "CategoryGroup"},
+                                    "__typename": "Category"},
+                                "merchant": {"name": "Store B", "id": "m2", "__typename": "Merchant"},
+                                "account": {"id": "a1", "displayName": "Checking", "__typename": "Account"},
+                                "tags": [],
+                                "__typename": "Transaction"
+                            },
+                            {
+                                "id": "txn-c",
+                                "amount": -30.00,
+                                "date": "2026-06-03",
+                                "needsReview": false,
+                                "notes": "",
+                                "category": {"id": "c1", "name": "Groceries",
+                                    "group": {"type": "expense", "__typename": "CategoryGroup"},
+                                    "__typename": "Category"},
+                                "merchant": {"name": "Store C", "id": "m3", "__typename": "Merchant"},
+                                "account": {"id": "a1", "displayName": "Checking", "__typename": "Account"},
+                                "tags": [],
+                                "__typename": "Transaction"
+                            }
+                        ],
+                        "__typename": "TransactionList"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let (txns, total) = client
+            .get_transactions_with_count("2026-06-01", "2026-06-30", 100)
+            .await
+            .unwrap();
+        assert_eq!(total, 3, "totalCount must be parsed from GraphQL response");
+        assert_eq!(txns.len(), 3, "all results must be returned");
+        assert_eq!(txns[0].merchant_name, "Store A");
+        assert_eq!(txns[2].amount, -30.00);
+    }
+
+    #[tokio::test]
+    async fn get_transactions_delegates_to_with_count_returns_only_vec() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "allTransactions": {
+                        "totalCount": 1,
+                        "results": [
+                            {
+                                "id": "txn-1",
+                                "amount": -45.50,
+                                "date": "2026-05-15",
+                                "needsReview": false,
+                                "notes": "lunch",
+                                "category": {"id": "cat-1", "name": "Dining",
+                                    "group": {"type": "expense", "__typename": "CategoryGroup"},
+                                    "__typename": "Category"},
+                                "merchant": {"name": "ACME Cafe", "id": "m-1", "__typename": "Merchant"},
+                                "account": {"id": "acct-1", "displayName": "Checking", "__typename": "Account"},
+                                "tags": [],
+                                "__typename": "Transaction"
+                            }
+                        ],
+                        "__typename": "TransactionList"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let txns = client
+            .get_transactions("2026-05-01", "2026-05-31", 100)
+            .await
+            .unwrap();
+        // get_transactions returns just the Vec — totalCount is discarded
+        assert_eq!(txns.len(), 1);
+        assert_eq!(txns[0].merchant_name, "ACME Cafe");
+    }
 
     fn client_for(base: &str) -> MonarchClient {
         let mut c = MonarchClient::new(Some(base.to_string()));
