@@ -197,6 +197,15 @@ async fn get_transactions_returns_same_vec_as_with_count() {
         .unwrap();
 
     assert_eq!(count, 1);
+    // Pin the concrete length so the equivalence loop below cannot pass
+    // vacuously: if BOTH paths regressed to an empty vec, len()==len() (0==0)
+    // would be true and the zip would iterate zero times — a false pass.
+    // Asserting the exact count forces the loop to actually run.
+    assert_eq!(
+        with_count_txns.len(),
+        1,
+        "with_count must return exactly the one mocked result"
+    );
     assert_eq!(
         plain_txns.len(),
         with_count_txns.len(),
