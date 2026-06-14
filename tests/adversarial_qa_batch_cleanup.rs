@@ -74,13 +74,19 @@ fn reference_two_pass(
 fn assert_equiv(snaps: &[AccountTypeSnapshot], prior: &str, current: &str, label: &str) {
     let new = actual_paydown_from_snapshots(snaps, prior, current);
     let old = reference_two_pass(snaps, prior, current);
-    assert_eq!(new, old, "fold diverged from two-pass oracle for case: {label}");
+    assert_eq!(
+        new, old,
+        "fold diverged from two-pass oracle for case: {label}"
+    );
 }
 
 #[test]
 fn fold_matches_two_pass_for_empty_slice() {
     assert_equiv(&[], "2026-04", "2026-05", "empty slice -> None");
-    assert_eq!(actual_paydown_from_snapshots(&[], "2026-04", "2026-05"), None);
+    assert_eq!(
+        actual_paydown_from_snapshots(&[], "2026-04", "2026-05"),
+        None
+    );
 }
 
 #[test]
@@ -88,7 +94,10 @@ fn fold_matches_two_pass_when_only_current_month_present() {
     // No prior snapshot -> first data point -> None.
     let snaps = [snap("credit", "2026-05", -5000.0)];
     assert_equiv(&snaps, "2026-04", "2026-05", "only-current -> None");
-    assert_eq!(actual_paydown_from_snapshots(&snaps, "2026-04", "2026-05"), None);
+    assert_eq!(
+        actual_paydown_from_snapshots(&snaps, "2026-04", "2026-05"),
+        None
+    );
 }
 
 #[test]
