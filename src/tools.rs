@@ -35,6 +35,13 @@ use rmcp::{
 use serde::Deserialize;
 use serde_json::json;
 
+/// Monarch's GraphQL `limit` argument uses a signed `Int` (32-bit), so the
+/// maximum value we can pass without overflowing is `i32::MAX` (2,147,483,647).
+/// Sending `u32::MAX` causes Monarch to return a server-side GraphQL error
+/// (see ADR 0008 and issue #47). At `i32::MAX` rows, the fetch is effectively
+/// unbounded for any real household.
+const GRAPHQL_INT_MAX: u32 = i32::MAX as u32;
+
 /// Input parameters for the `net_worth_trend` tool.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct NetWorthTrendParams {
@@ -850,7 +857,7 @@ async fn fetch_current_month_transactions(
     start: &str,
     end: &str,
 ) -> Result<Vec<crate::client::Transaction>, MonarchError> {
-    client.get_transactions(start, end, i32::MAX as u32).await
+    client.get_transactions(start, end, GRAPHQL_INT_MAX).await
 }
 
 async fn fetch_and_compute(
@@ -1100,7 +1107,7 @@ async fn fetch_and_compute_savings_rate(
     // call that spending_history uses, so savings_rate.true_spending always agrees
     // with spending_history.total_true_spending for the same range (ADR 0012).
     let transactions = client
-        .get_transactions(&start, &end, i32::MAX as u32)
+        .get_transactions(&start, &end, GRAPHQL_INT_MAX)
         .await?;
 
     Ok(compute_savings_rate(&transactions, &start, &end))
@@ -1123,7 +1130,7 @@ async fn fetch_and_compute_retirement_readiness(
     // Fetch accounts and transactions in parallel — they are independent.
     let (accounts_result, transactions_result) = tokio::join!(
         client.get_accounts(),
-        client.get_transactions(&start, &end, i32::MAX as u32),
+        client.get_transactions(&start, &end, GRAPHQL_INT_MAX),
     );
     let accounts = accounts_result?;
     let transactions = transactions_result?;
@@ -1257,7 +1264,7 @@ async fn fetch_and_compute_history(
             .map_err(MonarchError::InvalidInput)?;
 
     let transactions = client
-        .get_transactions(&start, &end, i32::MAX as u32)
+        .get_transactions(&start, &end, GRAPHQL_INT_MAX)
         .await?;
 
     Ok(compute_spending_history(&transactions, &start, &end))
