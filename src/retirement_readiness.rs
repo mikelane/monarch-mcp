@@ -105,6 +105,15 @@ pub const WITHDRAWAL_RATE_MAX: f64 = 0.10;
 /// Default withdrawal rate (4 % rule).
 pub const WITHDRAWAL_RATE_DEFAULT: f64 = 0.04;
 
+/// Human-readable note on what counts as "invested" for the SWR calculation.
+///
+/// Surfaced verbatim in every [`RetirementReadiness`] payload so the response
+/// is self-interpreting (ADR 0016). Defined as a named const so tests can
+/// assert the field value without repeating the string.
+pub(crate) const INVESTED_ASSETS_NOTE: &str = "Invested assets = Equities-class accounts only \
+    (brokerage, 401k, Roth, HSA, stock plan). Real estate, cash, crypto, \
+    vehicles, and liabilities are excluded from the SWR base (ADR 0016).";
+
 /// Validate that `rate` is in `[WITHDRAWAL_RATE_MIN, WITHDRAWAL_RATE_MAX]`.
 ///
 /// Returns the rate unchanged on success, or an `Err(String)` with a clear
@@ -168,10 +177,7 @@ pub fn compute_retirement_readiness(
         surplus_or_gap,
         withdrawal_rate_used: withdrawal_rate,
         spend_window_months,
-        invested_assets_note: "Invested assets = Equities-class accounts only \
-            (brokerage, 401k, Roth, HSA, stock plan). Real estate, cash, crypto, \
-            vehicles, and liabilities are excluded from the SWR base (ADR 0016)."
-            .to_string(),
+        invested_assets_note: INVESTED_ASSETS_NOTE.to_string(),
     }
 }
 
@@ -472,6 +478,17 @@ mod tests {
         assert!(
             rr.invested_assets_note.to_lowercase().contains("equities"),
             "note must mention equities"
+        );
+    }
+
+    #[test]
+    fn invested_assets_note_equals_const() {
+        // Proves the const promotion is byte-identical: the serialised output
+        // carries exactly INVESTED_ASSETS_NOTE, not a diverged copy.
+        let rr = compute_retirement_readiness(500_000.0, 36_000.0, 0.04, 6);
+        assert_eq!(
+            rr.invested_assets_note, INVESTED_ASSETS_NOTE,
+            "invested_assets_note must equal the INVESTED_ASSETS_NOTE const"
         );
     }
 

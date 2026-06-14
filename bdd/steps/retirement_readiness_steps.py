@@ -14,6 +14,8 @@ covers Nov 2025 – Apr 2026. Transactions are spread across those months.
 
 from __future__ import annotations
 
+import os
+
 import requests
 from behave import given, then, when
 
@@ -88,9 +90,32 @@ def step_configure_expense_transactions(context, n_months: int, total: float):
 
 
 def _trailing_months(n: int) -> list[str]:
-    """Return n complete month labels (YYYY-MM) ending before 2026-05."""
+    """Return n complete month labels (YYYY-MM) ending before the MONARCH_NOW month.
+
+    Derives the anchor from MONARCH_NOW (e.g. "2026-05-15") so the helper
+    survives a test-clock change without needing a manual update.
+    The most recent *complete* month is always one month before the current month.
+    """
+    monarch_now = os.environ.get("MONARCH_NOW", "")
+    if not monarch_now:
+        # Should not occur in the BDD suite (environment.py pins this).
+        raise RuntimeError(
+            "MONARCH_NOW is not set — environment.py must pin it before scenarios run"
+        )
+
+    # MONARCH_NOW is always ISO "YYYY-MM-DD"; unpacking documents that shape
+    # and turns any malformed value into a clear ValueError at this boundary.
+    year_str, month_str, _day_str = monarch_now.split("-")
+    anchor_year, anchor_month = int(year_str), int(month_str)
+
+    # Step back one month from the current month to get the most recent complete month.
+    anchor_month -= 1
+    if anchor_month == 0:
+        anchor_month = 12
+        anchor_year -= 1
+
     result = []
-    year, month = 2026, 4  # Apr 2026 = most recent complete month
+    year, month = anchor_year, anchor_month
     for _ in range(n):
         result.append(f"{year:04}-{month:02}")
         month -= 1
@@ -148,6 +173,10 @@ def step_assert_annual_baseline_spend(context, amount: float):
     result = _get_rr(context)
     actual = result.get("annual_baseline_spend")
     assert actual is not None, f"annual_baseline_spend missing from result: {result}"
+    # Tolerance is 1.0 (not 0.01 like other assertions) because annualisation
+    # multiplies the average monthly spend by 12, which can accumulate up to
+    # ~12× the per-month floating-point rounding slack. A 1.0 band is
+    # appropriate for annualized figures while still catching real divergences.
     assert abs(actual - amount) < 1.0, (
         f"Expected annual_baseline_spend={amount}, got {actual}. Full result: {result}"
     )

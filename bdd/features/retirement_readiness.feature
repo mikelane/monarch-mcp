@@ -12,6 +12,9 @@ Feature: retirement_readiness checks withdrawal coverage against baseline spend
   Background:
     Given the budgeting advisor is connected to the household's finances
 
+  # Intentionally extreme fixture: 1 M portfolio vs 480 k/yr spend → coverage ≈ 0.083.
+  # This exercises the low-coverage path (well under 1×) to ensure the tool
+  # reports a meaningful gap rather than a near-breakeven result.
   @ISSUE-69
   Scenario: Coverage ratio at the default 4 percent rule
     Given the following accounts for retirement readiness:
