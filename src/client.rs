@@ -1561,10 +1561,10 @@ mod tests {
                     "accounts": [
                         {
                             "id": "acct-401k",
-                            "displayName": "Fidelity 401k",
+                            "displayName": "Employer 401k",
                             "currentBalance": 120000.0,
                             "isHidden": false,
-                            "type": {"name": "investment", "display": "Investment", "__typename": "AccountType"},
+                            "type": {"name": "brokerage", "display": "Brokerage", "__typename": "AccountType"},
                             "subtype": {"name": "st_401k", "display": "401k", "__typename": "AccountSubtype"},
                             "__typename": "Account"
                         },
@@ -1588,7 +1588,7 @@ mod tests {
         assert_eq!(accounts.len(), 2);
 
         let k401 = &accounts[0];
-        assert_eq!(k401.display_name, "Fidelity 401k");
+        assert_eq!(k401.display_name, "Employer 401k");
         assert_eq!(
             k401.subtype.as_ref().map(|s| s.name.as_str()),
             Some("st_401k"),
