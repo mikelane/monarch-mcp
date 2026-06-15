@@ -15,6 +15,9 @@ goals.toml
 # Reference clones & scratch (local only)
 .tools/
 
+# Capstone demo scaffolding (throwaway, never shipped — see issue #21)
+demo/
+
 # Git worktrees (development isolation; never versioned)
 .worktrees/
 
