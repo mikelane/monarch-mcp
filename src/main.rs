@@ -24,6 +24,7 @@ mod progress_vs_goals;
 mod recurring_scan;
 mod retirement_readiness;
 mod savings_rate;
+mod server;
 mod spending_history;
 mod spending_report;
 mod subscription_audit;
@@ -46,9 +47,30 @@ async fn main() -> Result<()> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
+    match parse_mode(&args) {
+        RunMode::Login => run_login().await,
+        RunMode::Stdio => run_server().await,
+        RunMode::Http => server::run_http_server().await,
+    }
+}
+
+/// Which mode to start the server in, derived from CLI arguments.
+#[derive(Debug, PartialEq, Eq)]
+enum RunMode {
+    /// Default: stdio MCP server.
+    Stdio,
+    /// `login` subcommand: interactive credential capture.
+    Login,
+    /// `--http` flag: streamable-HTTP MCP server, loopback-only.
+    Http,
+}
+
+/// Parses CLI args (including argv\[0\]) into a [`RunMode`]. Pure — no I/O.
+fn parse_mode(args: &[String]) -> RunMode {
     match args.get(1).map(String::as_str) {
-        Some("login") => run_login().await,
-        _ => run_server().await,
+        Some("login") => RunMode::Login,
+        Some("--http") => RunMode::Http,
+        _ => RunMode::Stdio,
     }
 }
 
@@ -105,4 +127,30 @@ async fn run_login() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod parse_mode_tests {
+    use super::*;
+
+    #[test]
+    fn it_returns_login_mode_for_the_login_subcommand() {
+        let args = vec!["monarch-mcp".to_string(), "login".to_string()];
+
+        assert_eq!(parse_mode(&args), RunMode::Login);
+    }
+
+    #[test]
+    fn it_returns_stdio_mode_when_no_args_are_given() {
+        let args = vec!["monarch-mcp".to_string()];
+
+        assert_eq!(parse_mode(&args), RunMode::Stdio);
+    }
+
+    #[test]
+    fn it_returns_http_mode_for_the_http_flag() {
+        let args = vec!["monarch-mcp".to_string(), "--http".to_string()];
+
+        assert_eq!(parse_mode(&args), RunMode::Http);
+    }
 }

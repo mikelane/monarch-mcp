@@ -18,6 +18,7 @@ pub mod progress_vs_goals;
 pub mod recurring_scan;
 pub mod retirement_readiness;
 pub mod savings_rate;
+pub mod server;
 pub mod spending_history;
 pub mod spending_report;
 pub mod subscription_audit;
