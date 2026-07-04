@@ -12,6 +12,7 @@
 
 use std::net::SocketAddr;
 
+use anyhow::Context;
 use axum::{
     extract::Request,
     http::{header::ORIGIN, StatusCode},
@@ -155,8 +156,17 @@ pub async fn run_http_server() -> anyhow::Result<()> {
 
     tracing::info!("monarch-mcp starting (streamable-HTTP MCP server on {socket_addr})");
 
-    let listener = tokio::net::TcpListener::bind(socket_addr).await?;
-    axum::serve(listener, app.into_make_service()).await?;
+    // Attach the address to bind/serve failures: the raw io::Error (e.g.
+    // "Address already in use") carries no address, and the "starting on
+    // {socket_addr}" line above is info-level (filtered out by the default
+    // WARN threshold), so without this context an operator sees an
+    // address-less error with no way to tell which port collided.
+    let listener = tokio::net::TcpListener::bind(socket_addr)
+        .await
+        .with_context(|| format!("failed to bind HTTP MCP server to {socket_addr}"))?;
+    axum::serve(listener, app.into_make_service())
+        .await
+        .with_context(|| format!("HTTP MCP server on {socket_addr} exited with an error"))?;
     Ok(())
 }
 
@@ -228,6 +238,37 @@ mod tests {
     }
 
     #[test]
+    fn it_allows_a_loopback_origin_that_carries_a_path() {
+        // An `Origin` header never carries a path per spec, but the guard
+        // strips anything from the first `/`, `?`, or `#` defensively (the
+        // `split(['/', '?', '#'])` in `is_allowed_origin`). This pins that the
+        // authority is isolated before the exact-host check, so a real loopback
+        // host with a trailing path is still recognized as loopback. Without
+        // that split, `host_without_port` would see `localhost/mcp` and reject
+        // it — this test fails, catching a mutation that drops the split.
+        let result = is_allowed_origin("http://localhost/mcp");
+
+        assert!(result);
+    }
+
+    #[test]
+    fn it_rejects_a_cross_site_host_hiding_loopback_in_a_path() {
+        // The real host the browser connects to is `evil.example`; a `/localhost`
+        // path segment must not launder it into the loopback allowlist.
+        let result = is_allowed_origin("http://evil.example/localhost");
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn it_rejects_a_cross_site_host_hiding_loopback_in_a_query() {
+        // Same laundering attempt via a query string rather than a path.
+        let result = is_allowed_origin("http://evil.example?next=localhost");
+
+        assert!(!result);
+    }
+
+    #[test]
     fn it_allows_a_loopback_ip_origin_without_a_port() {
         let result = is_allowed_origin("http://127.0.0.1");
 
@@ -266,17 +307,21 @@ mod tests {
     }
 
     #[test]
-    fn it_accepts_ipv4_loopback() {
+    fn it_accepts_ipv4_loopback_and_returns_that_exact_socket_addr() {
+        // Pin the returned `SocketAddr`, not just `is_ok()`: the returned value
+        // is the address that actually gets bound. A mutation that returns
+        // `Ok(0.0.0.0:8770)` on the accept path would pass an `is_ok()` check
+        // while silently binding a public interface — this equality catches it.
         let result = validate_bind_addr("127.0.0.1:8770");
 
-        assert!(result.is_ok());
+        assert_eq!(result, Ok("127.0.0.1:8770".parse().unwrap()));
     }
 
     #[test]
-    fn it_accepts_ipv6_loopback() {
+    fn it_accepts_ipv6_loopback_and_returns_that_exact_socket_addr() {
         let result = validate_bind_addr("[::1]:8770");
 
-        assert!(result.is_ok());
+        assert_eq!(result, Ok("[::1]:8770".parse().unwrap()));
     }
 
     #[test]

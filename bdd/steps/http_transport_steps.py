@@ -78,3 +78,15 @@ def step_request_with_origin(context, origin: str):
 def step_assert_status(context, status: int):
     actual = context.raw_http_response.status_code
     assert actual == status, f"Expected status {status}, got {actual}"
+
+
+@then("the HTTP transport does not respond with status {status:d}")
+def step_assert_not_status(context, status: int):
+    # Positive control for the Origin guard: a loopback Origin must pass the
+    # middleware and reach the MCP service, so the status is anything but the
+    # 403 the guard emits for disallowed origins.
+    actual = context.raw_http_response.status_code
+    assert actual != status, (
+        f"Expected any status except {status}, but got {actual} "
+        f"(loopback Origin was wrongly rejected). Body: {context.raw_http_response.text!r}"
+    )

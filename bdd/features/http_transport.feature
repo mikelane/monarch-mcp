@@ -40,3 +40,11 @@ Feature: Streamable-HTTP MCP transport
     Scenario: A request whose origin only prefixes localhost is rejected
       When a request to the HTTP transport carries Origin "http://localhost.evil.example"
       Then the HTTP transport responds with status 403
+
+    Scenario: A request carrying a loopback Origin is allowed through
+      # Positive control: proves the guard's exact-host allow path lets a real
+      # loopback browser origin reach the MCP service (not 403). Without this,
+      # a bug that rejected every present Origin would still pass every 403
+      # scenario above.
+      When a request to the HTTP transport carries Origin "http://127.0.0.1"
+      Then the HTTP transport does not respond with status 403

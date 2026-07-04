@@ -107,10 +107,11 @@ returns `ok` for basic liveness checks.
 
 > [!IMPORTANT]
 > This mode **refuses to bind any non-loopback address** — a hard error, never a silent
-> fallback. It also rejects any request whose `Origin` header isn't a localhost variant,
-> which stops DNS-rebinding (a malicious webpage rebinding an attacker hostname to
-> `127.0.0.1` so your browser POSTs to `localhost:8770`); loopback binding alone doesn't
-> catch that. See [ADR 0018](docs/decisions/0018-http-transport-shape-and-loopback-enforcement.md).
+> fallback. It also rejects any request that carries a non-localhost `Origin` header (an
+> absent `Origin`, the normal case for non-browser MCP clients, is allowed), which stops
+> DNS-rebinding (a malicious webpage rebinding an attacker hostname to `127.0.0.1` so your
+> browser POSTs to `localhost:8770`); loopback binding alone doesn't catch that.
+> See [ADR 0018](docs/decisions/0018-http-transport-shape-and-loopback-enforcement.md).
 > There's still no auth and no tunnel here — this is Phase 1 of Claude Cowork support
 > (issue #88). Exposing the server beyond your machine is Phase 2, and it doesn't exist yet.
 

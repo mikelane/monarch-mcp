@@ -80,10 +80,15 @@ The fix: `is_allowed_origin` (`src/server.rs`) is a pure, unit-tested
 function enforced as axum middleware in front of `/mcp` via
 `tower::ServiceBuilder`:
 
-- **Origin header present and not a localhost variant** (`http://localhost*`,
-  `http://127.0.0.1*`, `http://[::1]*`) → reject with `403 Forbidden`.
-  A present, non-localhost Origin can only come from a browser making a
-  cross-origin request — exactly the DNS-rebinding shape above.
+- **Origin header present and not an exact loopback host** → reject with
+  `403 Forbidden`. The allowed hosts are exactly `localhost`, `127.0.0.1`,
+  or `[::1]` — each over `http://` and each with an optional `:port`. The
+  match is on the *exact* host, not a prefix: a rebindable name like
+  `localhost.evil.example` or `127.0.0.1.evil.example` (a prefix match would
+  wave those through) is rejected, as is an embedded-userinfo trick like
+  `http://localhost@evil.example`. A present, non-localhost Origin can only
+  come from a browser making a cross-origin request — exactly the
+  DNS-rebinding shape above.
 - **Origin header absent** → allow. Only browsers attach `Origin` to
   requests; non-browser MCP clients (including the Phase 2 tunnel path,
   which is a server-to-server hop, not a browser) never send one. Absent
