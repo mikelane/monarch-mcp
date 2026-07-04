@@ -12,7 +12,14 @@
 
 use std::net::SocketAddr;
 
-use axum::{routing::get, Router};
+use axum::{
+    extract::Request,
+    http::{header::ORIGIN, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::get,
+    Router,
+};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
@@ -39,6 +46,40 @@ pub fn validate_bind_addr(addr: &str) -> Result<SocketAddr, String> {
     Ok(parsed)
 }
 
+/// Returns whether `origin` (the raw `Origin` header value, if any) is
+/// allowed to reach `/mcp`.
+///
+/// A present, non-localhost `Origin` means a browser tab is making this
+/// request (only browsers send `Origin` cross-origin) — reject it, since
+/// that's exactly the DNS-rebinding attack shape the MCP spec warns about:
+/// a malicious page rebinds an attacker-controlled hostname to 127.0.0.1
+/// and has the browser POST to it. A missing `Origin` means a non-browser
+/// MCP client (the normal case for this server) — allow it.
+pub fn is_allowed_origin(origin: &str) -> bool {
+    origin.is_empty()
+        || origin.starts_with("http://localhost")
+        || origin.starts_with("http://127.0.0.1")
+        || origin.starts_with("http://[::1]")
+}
+
+/// Axum middleware enforcing [`is_allowed_origin`] on every request to `/mcp`.
+///
+/// Rejects disallowed origins with `403 Forbidden` before the request reaches
+/// the MCP service.
+async fn reject_disallowed_origin(request: Request, next: Next) -> Response {
+    let origin = request
+        .headers()
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+
+    if !is_allowed_origin(origin) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    next.run(request).await
+}
+
 /// Default bind address when `MONARCH_HTTP_ADDR` is unset.
 const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:8770";
 
@@ -63,9 +104,13 @@ pub async fn run_http_server() -> anyhow::Result<()> {
         StreamableHttpServerConfig::default(),
     );
 
+    let guarded_mcp_service = tower::ServiceBuilder::new()
+        .layer(middleware::from_fn(reject_disallowed_origin))
+        .service(mcp_service);
+
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .nest_service("/mcp", mcp_service);
+        .nest_service("/mcp", guarded_mcp_service);
 
     tracing::info!("monarch-mcp starting (streamable-HTTP MCP server on {socket_addr})");
 
@@ -77,6 +122,41 @@ pub async fn run_http_server() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn it_rejects_a_cross_site_origin() {
+        let result = is_allowed_origin("https://evil.example");
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn it_allows_a_request_with_no_origin_header() {
+        let result = is_allowed_origin("");
+
+        assert!(result);
+    }
+
+    #[test]
+    fn it_allows_a_localhost_origin() {
+        let result = is_allowed_origin("http://localhost:8770");
+
+        assert!(result);
+    }
+
+    #[test]
+    fn it_allows_an_ipv4_loopback_origin() {
+        let result = is_allowed_origin("http://127.0.0.1:8770");
+
+        assert!(result);
+    }
+
+    #[test]
+    fn it_allows_an_ipv6_loopback_origin() {
+        let result = is_allowed_origin("http://[::1]:8770");
+
+        assert!(result);
+    }
 
     #[test]
     fn it_rejects_a_non_loopback_address() {
