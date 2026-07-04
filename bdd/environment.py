@@ -15,6 +15,7 @@ import os
 import tempfile
 
 from mock_monarch.server import reset_fixtures, start_server
+from support.http_mcp_client import HttpMcpClient
 from support.mcp_client import McpClient
 
 
@@ -71,11 +72,25 @@ def before_scenario(context, scenario):
         # Store the error so When-steps can surface it as a meaningful failure.
         context.mcp_start_error = exc
 
+    # Additive: scenarios in http_transport.feature (@ISSUE-88) also need an
+    # HTTP-transport client. Only started for those scenarios so existing
+    # stdio scenarios don't pay the cost of a second subprocess.
+    context.http_mcp_client = None
+    if "ISSUE-88" in scenario.effective_tags:
+        http_client = HttpMcpClient(
+            monarch_base=context.mock_base,
+            goals_file=context.goals_file,
+        )
+        http_client.start()
+        context.http_mcp_client = http_client
+
 
 def after_scenario(context, scenario):
     """Tear down the MCP client and remove the temporary goals file."""
     if hasattr(context, "mcp_client") and context.mcp_client is not None:
         context.mcp_client.stop()
+    if hasattr(context, "http_mcp_client") and context.http_mcp_client is not None:
+        context.http_mcp_client.stop()
     if hasattr(context, "goals_file") and context.goals_file:
         try:
             os.unlink(context.goals_file)
