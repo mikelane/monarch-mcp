@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -40,6 +41,11 @@ import requests
 _DEFAULT_BIN = str(
     Path(__file__).parent.parent.parent / "target" / "debug" / "monarch-mcp"
 )
+
+# Bound every HTTP call so a wedged server subprocess can't hang the BDD suite
+# indefinitely (requests has no default timeout). Generous — the loopback mock
+# responds in milliseconds; this only guards against a hung/crashed process.
+_REQUEST_TIMEOUT_S = 30.0
 
 
 def _free_port() -> int:
@@ -77,6 +83,7 @@ class HttpMcpClient:
         self._next_id = 1
         self._session_id: str | None = None
         self._mcp_url: str | None = None
+        self._session_tmpdir: str | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -123,10 +130,8 @@ class HttpMcpClient:
             except subprocess.TimeoutExpired:
                 self._process.kill()
             self._process = None
-        if hasattr(self, "_session_tmpdir") and self._session_tmpdir:
-            import shutil as _shutil
-
-            _shutil.rmtree(self._session_tmpdir, ignore_errors=True)
+        if self._session_tmpdir:
+            shutil.rmtree(self._session_tmpdir, ignore_errors=True)
             self._session_tmpdir = None
 
     @property
@@ -226,7 +231,9 @@ class HttpMcpClient:
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
 
-        response = requests.post(self._mcp_url, json=payload, headers=headers)
+        response = requests.post(
+            self._mcp_url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT_S
+        )
         session_id = response.headers.get("Mcp-Session-Id")
         if session_id:
             self._session_id = session_id

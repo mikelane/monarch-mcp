@@ -70,6 +70,7 @@ def step_request_with_origin(context, origin: str):
             "Accept": "application/json, text/event-stream",
             "Origin": origin,
         },
+        timeout=30.0,
     )
 
 
