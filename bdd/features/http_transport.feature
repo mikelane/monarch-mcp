@@ -36,3 +36,7 @@ Feature: Streamable-HTTP MCP transport
     Scenario: A request from a malicious webpage origin is rejected
       When a request to the HTTP transport carries Origin "https://evil.example"
       Then the HTTP transport responds with status 403
+
+    Scenario: A request whose origin only prefixes localhost is rejected
+      When a request to the HTTP transport carries Origin "http://localhost.evil.example"
+      Then the HTTP transport responds with status 403

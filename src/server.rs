@@ -56,10 +56,51 @@ pub fn validate_bind_addr(addr: &str) -> Result<SocketAddr, String> {
 /// and has the browser POST to it. A missing `Origin` means a non-browser
 /// MCP client (the normal case for this server) — allow it.
 pub fn is_allowed_origin(origin: &str) -> bool {
-    origin.is_empty()
-        || origin.starts_with("http://localhost")
-        || origin.starts_with("http://127.0.0.1")
-        || origin.starts_with("http://[::1]")
+    if origin.is_empty() {
+        return true;
+    }
+
+    // Only `http://` origins can be loopback here; anything else is cross-site.
+    let Some(authority) = origin.strip_prefix("http://") else {
+        return false;
+    };
+
+    // A well-formed `Origin` header carries no path, but parse defensively:
+    // trim anything from the first path/query/fragment delimiter so a crafted
+    // value like `http://localhost/../@evil` can't smuggle a real host past us.
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or(authority);
+
+    // Reject embedded userinfo (`localhost@evil.example`) — the host that the
+    // browser actually connects to is *after* the `@`, so a prefix like
+    // `localhost@` must never be treated as loopback.
+    if authority.contains('@') {
+        return false;
+    }
+
+    // Require an *exact* loopback host. `starts_with` here would let an
+    // attacker-registrable name such as `localhost.evil.example` or
+    // `127.0.0.1.evil.example` (rebound to 127.0.0.1) pass — the exact DNS
+    // rebinding shape this guard exists to stop.
+    matches!(
+        host_without_port(authority),
+        "localhost" | "127.0.0.1" | "[::1]"
+    )
+}
+
+/// Returns the host portion of an `authority` (`host` or `host:port`),
+/// handling bracketed IPv6 literals like `[::1]:8770`.
+fn host_without_port(authority: &str) -> &str {
+    if authority.starts_with('[') {
+        // IPv6 literal: the host is everything up to and including `]`.
+        return match authority.find(']') {
+            Some(end) => &authority[..=end],
+            None => authority,
+        };
+    }
+    match authority.split_once(':') {
+        Some((host, _port)) => host,
+        None => authority,
+    }
 }
 
 /// Axum middleware enforcing [`is_allowed_origin`] on every request to `/mcp`.
@@ -159,6 +200,58 @@ mod tests {
     }
 
     #[test]
+    fn it_rejects_a_subdomain_masquerading_as_localhost() {
+        let result = is_allowed_origin("http://localhost.evil.example");
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn it_rejects_a_subdomain_masquerading_as_loopback_ip() {
+        let result = is_allowed_origin("http://127.0.0.1.evil.example");
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn it_rejects_userinfo_masquerading_as_localhost() {
+        let result = is_allowed_origin("http://localhost@evil.example");
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn it_rejects_a_bare_prefix_extension_of_localhost() {
+        let result = is_allowed_origin("http://localhostevil.example");
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn it_allows_a_loopback_ip_origin_without_a_port() {
+        let result = is_allowed_origin("http://127.0.0.1");
+
+        assert!(result);
+    }
+
+    #[test]
+    fn it_allows_an_ipv6_loopback_origin_without_a_port() {
+        let result = is_allowed_origin("http://[::1]");
+
+        assert!(result);
+    }
+
+    #[test]
+    fn it_rejects_an_https_localhost_origin() {
+        // A browser only sends a cross-origin `Origin` for a page it loaded;
+        // an `https://` scheme cannot be this loopback http server, so treat it
+        // as cross-site and reject.
+        let result = is_allowed_origin("https://localhost:8770");
+
+        assert!(!result);
+    }
+
+    #[test]
     fn it_rejects_a_non_loopback_address() {
         let result = validate_bind_addr("0.0.0.0:8770");
 
@@ -189,6 +282,18 @@ mod tests {
     #[test]
     fn it_rejects_a_malformed_address() {
         let result = validate_bind_addr("not-an-address");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn it_rejects_an_ipv4_mapped_ipv6_loopback_address() {
+        // SAFETY / invariant: `::ffff:127.0.0.1` is an IPv4-mapped IPv6 address.
+        // Rust's `Ipv6Addr::is_loopback()` is *only* true for `::1`, so this
+        // maps to a real IPv4 interface and `validate_bind_addr` must reject it.
+        // This test guards against a future "helpful" change that treats mapped
+        // loopback as loopback and silently exposes the server off 127.0.0.1.
+        let result = validate_bind_addr("[::ffff:127.0.0.1]:8770");
 
         assert!(result.is_err());
     }
