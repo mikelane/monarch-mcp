@@ -94,11 +94,33 @@ claude mcp add monarch-mcp -- monarch-mcp
 
 …or copy [`.mcp.json.example`](.mcp.json.example) to `.mcp.json` in your project.
 
+**Streamable-HTTP (local, loopback-only):**
+
+```bash
+monarch-mcp --http
+```
+
+Starts the same tool set over streamable-HTTP MCP instead of stdio, serving `/mcp` on
+`127.0.0.1:8770` by default. Override the bind address with `MONARCH_HTTP_ADDR`
+(e.g. `MONARCH_HTTP_ADDR=127.0.0.1:9000 monarch-mcp --http`). A `/healthz` endpoint
+returns `ok` for basic liveness checks.
+
+> [!IMPORTANT]
+> This mode **refuses to bind any non-loopback address** — a hard error, never a silent
+> fallback. It also rejects any request that carries a non-localhost `Origin` header (an
+> absent `Origin`, the normal case for non-browser MCP clients, is allowed), which stops
+> DNS-rebinding (a malicious webpage rebinding an attacker hostname to `127.0.0.1` so your
+> browser POSTs to `localhost:8770`); loopback binding alone doesn't catch that.
+> See [ADR 0018](docs/decisions/0018-http-transport-shape-and-loopback-enforcement.md).
+> There's still no auth and no tunnel here — this is Phase 1 of Claude Cowork support
+> (issue #88). Exposing the server beyond your machine is Phase 2, and it doesn't exist yet.
+
 > [!NOTE]
 > **Claude Cowork** runs MCP servers in an isolated VM and currently can't reach a local
 > stdio server ([known issue](https://github.com/anthropics/claude-code/issues/23424)).
-> Use it from Claude Code on your machine; for Cowork you'd need to expose it as a remote
-> HTTP MCP. See [docs](docs/) for the trade-offs.
+> `--http` above is the first step toward supporting Cowork, but it's loopback-only —
+> Cowork's VM still can't reach it without the Phase 2 tunnel work. Use it from Claude
+> Code on your machine for now. See [docs](docs/) for the trade-offs.
 
 ### 4. Use it
 
