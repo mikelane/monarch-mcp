@@ -86,9 +86,12 @@ function enforced as axum middleware in front of `/mcp` via
   match is on the *exact* host, not a prefix: a rebindable name like
   `localhost.evil.example` or `127.0.0.1.evil.example` (a prefix match would
   wave those through) is rejected, as is an embedded-userinfo trick like
-  `http://localhost@evil.example`. A present, non-localhost Origin can only
-  come from a browser making a cross-origin request — exactly the
-  DNS-rebinding shape above.
+  `http://localhost@evil.example`. Port validation is part of this exact-match
+  enforcement: any port suffix must be non-empty and consist entirely of ASCII
+  digits; a malformed port like `:8770evil` or an unclosed IPv6 bracket followed
+  by arbitrary bytes (e.g., `[::1]evil`) causes the authority to be rejected.
+  A present, non-localhost Origin can only come from a browser making a
+  cross-origin request — exactly the DNS-rebinding shape above.
 - **Origin header absent** → allow. Only browsers attach `Origin` to
   requests; non-browser MCP clients (including the Phase 2 tunnel path,
   which is a server-to-server hop, not a browser) never send one. Absent

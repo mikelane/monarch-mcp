@@ -81,26 +81,58 @@ pub fn is_allowed_origin(origin: &str) -> bool {
     // Require an *exact* loopback host. `starts_with` here would let an
     // attacker-registrable name such as `localhost.evil.example` or
     // `127.0.0.1.evil.example` (rebound to 127.0.0.1) pass — the exact DNS
-    // rebinding shape this guard exists to stop.
+    // rebinding shape this guard exists to stop. The host extraction also
+    // validates that any port suffix is well-formed (all ASCII digits) and
+    // that IPv6 brackets have no trailing bytes other than an optional port.
     matches!(
         host_without_port(authority),
-        "localhost" | "127.0.0.1" | "[::1]"
+        Some("localhost" | "127.0.0.1" | "[::1]")
     )
 }
 
 /// Returns the host portion of an `authority` (`host` or `host:port`),
 /// handling bracketed IPv6 literals like `[::1]:8770`.
-fn host_without_port(authority: &str) -> &str {
+///
+/// Validates that any port suffix is well-formed (non-empty, all ASCII digits).
+/// For IPv6, also validates that nothing follows `]` except an optional `:<digits>` port.
+/// Returns `None` if the authority format is invalid.
+fn host_without_port(authority: &str) -> Option<&str> {
     if authority.starts_with('[') {
         // IPv6 literal: the host is everything up to and including `]`.
-        return match authority.find(']') {
-            Some(end) => &authority[..=end],
-            None => authority,
-        };
-    }
-    match authority.split_once(':') {
-        Some((host, _port)) => host,
-        None => authority,
+        // After `]`, there must be nothing or `:digits`.
+        match authority.find(']') {
+            Some(end) => {
+                let after_bracket = &authority[end + 1..];
+                if after_bracket.is_empty() {
+                    // No port, just the bracket.
+                    return Some(&authority[..=end]);
+                }
+                // After `]` we must have `:digits` or nothing.
+                if let Some(port) = after_bracket.strip_prefix(':') {
+                    // Port must be non-empty and all ASCII digits.
+                    if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+                        return Some(&authority[..=end]);
+                    }
+                }
+                // Anything else after `]` is invalid (e.g., `]evil` or `:` with no digits).
+                None
+            }
+            None => None, // Unclosed bracket is invalid.
+        }
+    } else {
+        // IPv4 or hostname: split on the first `:`.
+        match authority.split_once(':') {
+            Some((host, port)) => {
+                // Port must be non-empty and all ASCII digits.
+                if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+                    Some(host)
+                } else {
+                    // Empty port or non-digit characters in port.
+                    None
+                }
+            }
+            None => Some(authority), // No port, authority is the host.
+        }
     }
 }
 
@@ -362,5 +394,26 @@ mod tests {
         temp_env::with_var("MONARCH_HTTP_ADDR", Some(""), || {
             assert_eq!(resolve_http_addr(), DEFAULT_HTTP_ADDR);
         });
+    }
+
+    #[test]
+    fn it_rejects_an_origin_with_a_non_numeric_port() {
+        let result = is_allowed_origin("http://localhost:8770evil.example");
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn it_rejects_an_origin_with_trailing_bytes_after_the_ipv6_bracket() {
+        let result = is_allowed_origin("http://[::1]evil.example");
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn it_rejects_an_origin_with_an_empty_port() {
+        let result = is_allowed_origin("http://localhost:");
+
+        assert!(!result);
     }
 }

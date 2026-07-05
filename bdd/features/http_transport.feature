@@ -41,6 +41,14 @@ Feature: Streamable-HTTP MCP transport
       When a request to the HTTP transport carries Origin "http://localhost.evil.example"
       Then the HTTP transport responds with status 403
 
+    Scenario: A request with a malformed port is rejected
+      When a request to the HTTP transport carries Origin "http://localhost:8770evil.example"
+      Then the HTTP transport responds with status 403
+
+    Scenario: A request with trailing bytes after IPv6 bracket is rejected
+      When a request to the HTTP transport carries Origin "http://[::1]evil.example"
+      Then the HTTP transport responds with status 403
+
     Scenario: A request carrying a loopback Origin is allowed through
       # Positive control: proves the guard's exact-host allow path lets a real
       # loopback browser origin reach the MCP service (not 403). Without this,
