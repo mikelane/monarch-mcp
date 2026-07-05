@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/mikelane/monarch-mcp/compare/v0.4.2...v0.4.3) - 2026-07-05
+
+### Added
+
+- native loopback-only streamable-HTTP transport (--http) ([#89](https://github.com/mikelane/monarch-mcp/pull/89))
+
+### Miscellaneous
+
+- gitignore demo/ capstone scaffolding ([#21](https://github.com/mikelane/monarch-mcp/pull/21)) ([#81](https://github.com/mikelane/monarch-mcp/pull/81))
+- batch post-review cleanups (#52, #49, #43, #30) ([#79](https://github.com/mikelane/monarch-mcp/pull/79))
+- test-quality polish for retirement_readiness (#69 review deferrals) ([#77](https://github.com/mikelane/monarch-mcp/pull/77))
+
+### Testing
+
+- harden transaction fetch layer and verify no Monarch pagination cap ([#80](https://github.com/mikelane/monarch-mcp/pull/80))
+
 ## [0.4.2](https://github.com/mikelane/monarch-mcp/compare/v0.4.1...v0.4.2) - 2026-06-11
 
 ### Added
